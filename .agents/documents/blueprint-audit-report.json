@@ -1,0 +1,145 @@
+{
+  "audit_scope": "AUTOPILOT Plugin Documentation",
+  "audit_date": "2026-06-29",
+  "d1": {
+    "pass": false,
+    "gaps": [
+      {"type": "missing_path", "path": "application/modules/README.md", "severity": "high", "detail": "No README for modules directory — required to link to module overviews"},
+      {"type": "missing_path", "path": "application/modules/core/overview.md", "severity": "critical", "detail": "Core module has no overview.md with 5-section template"},
+      {"type": "missing_path", "path": "application/api/README.md", "severity": "high", "detail": "No API README to link API spec files"},
+      {"type": "missing_path", "path": "application/testing/README.md", "severity": "high", "detail": "No testing README to link test docs"},
+      {"type": "missing_path", "path": "application/testing/core/test-iteration-loop.md", "severity": "high", "detail": "No per-feature test docs under application/testing/"},
+      {"type": "missing_path", "path": "application/testing/core/bdd-iteration-loop.md", "severity": "high", "detail": "BDD scenarios are at requirements/bdd-scenarios/, not application/testing/"},
+      {"type": "missing_path", "path": "application/testing/core/edge-cases-iteration-loop.md", "severity": "high", "detail": "Edge cases at requirements/edge-cases-autopilot.md, not application/testing/"},
+      {"type": "missing_path", "path": "application/testing/core/test-state-persistence.md", "severity": "high"},
+      {"type": "missing_path", "path": "application/testing/core/bdd-state-persistence.md", "severity": "high"},
+      {"type": "missing_path", "path": "application/testing/core/edge-cases-state-persistence.md", "severity": "high"},
+      {"type": "missing_path", "path": "application/testing/core/test-supervised-mode.md", "severity": "high"},
+      {"type": "missing_path", "path": "application/testing/core/test-quality-gates.md", "severity": "high"},
+      {"type": "missing_path", "path": "application/testing/core/test-backpressure.md", "severity": "high"},
+      {"type": "missing_path", "path": "tasks/roadmap/roadmap.md", "severity": "medium", "detail": "roadmap.md exists at tasks/roadmap.md but not in tasks/roadmap/ subdirectory"},
+      {"type": "missing_path", "path": "design/domain/", "severity": "medium", "detail": "Domain modeling artifacts at design/architecture/domain-model.md instead of design/domain/"},
+      {"type": "missing_path", "path": "design/database/", "severity": "medium", "detail": "Database schema at design/architecture/database-schema.md instead of design/database/"},
+      {"type": "missing_path", "path": "design/flows/", "severity": "medium", "detail": "User flows at design/ux/ instead of design/flows/"},
+      {"type": "missing_path", "path": "design/decisions/", "severity": "medium", "detail": "ADRs at top-level decisions/ instead of design/decisions/"},
+      {"type": "unexpected_directory", "path": "decisions/", "severity": "medium", "detail": "ADRs at top-level decisions/ — expected under design/decisions/"},
+      {"type": "unexpected_directory", "path": "design/ux/", "severity": "low", "detail": "UX files grouped under design/ux/ — not in standard contract but functionally valid"},
+      {"type": "unexpected_directory", "path": "design/testing/", "severity": "medium", "detail": "Test artifacts under design/testing/ — expected under application/testing/"},
+      {"type": "unexpected_directory", "path": "requirements/bdd-scenarios/", "severity": "medium", "detail": "BDD scenarios in requirements/ — expected under application/testing/{module}/"},
+      {"type": "unexpected_directory", "path": "tasks/planning/", "severity": "low", "detail": "PRD/FSD/TDD at tasks/planning/ — per audit note this is an accepted alternative location"},
+      {"type": "misplaced_file", "path": "requirements/edge-cases-autopilot.md", "severity": "medium", "detail": "Edge cases in requirements/ — expected under application/testing/{module}/"},
+      {"type": "misplaced_file", "path": "requirements/bdd-scenarios/autopilot-core.md", "severity": "medium", "detail": "BDD scenarios in requirements/ — expected under application/testing/core/"},
+      {"type": "misplaced_file", "path": "requirements/feature-prioritization.md", "severity": "medium", "detail": "Feature prioritization in requirements/ — expected under tasks/backlog/"}
+    ]
+  },
+  "d2": {
+    "pass": false,
+    "gaps": [
+      {"file": "design/ux/screen-wireframes.md", "issue": "ASCII box-drawing diagram found (lines 6-27)", "line": 6, "expected": "Mermaid graph TB or flowchart"},
+      {"file": "design/ux/navigation-structure.md", "issue": "ASCII indented tree found (lines 7-19)", "line": 7, "expected": "Mermaid graph TB"},
+      {"file": "design/ux/user-flow-diagrams.md", "issue": "ASCII arrow-based flow diagram (lines 6-20, 24-32, 36-48)", "line": 6, "expected": "Mermaid flowchart LR or graph TB"},
+      {"file": "design/ux/dashboard-layout.md", "issue": "ASCII box-drawing diagram found (lines 5-29)", "line": 5, "expected": "Mermaid flowchart TB or graph TB"},
+      {"file": "design/ux/responsive-layout.md", "issue": "No diagram at all — requires Mermaid flowchart per breakpoint", "line": 1, "expected": "Mermaid flowchart per breakpoint"},
+      {"file": "design/ux/component-inventory.md", "issue": "Table-only, no Mermaid diagram", "line": 1, "expected": "No Mermaid required per skill-output map (acceptable)"},
+      {"file": "application/documentation-manifest.md", "issue": "ASCII indented tree of directory structure (lines 7-103)", "line": 7, "expected": "Mermaid or plain list — ASCII tree acceptable for manifest"},
+      {"file": "tasks/planning/fsd-autopilot.md", "issue": "ASCII architecture diagram with arrows (line 5-10)", "line": 5, "expected": "Mermaid flowchart"},
+      {"file": "design/architecture/domain-model.md", "issue": "No Mermaid erDiagram — required per domain-modeling skill", "line": 1}
+    ]
+  },
+  "d2_1": {
+    "pass": false,
+    "gaps": [
+      {"file": "ALL", "issue": "mmdc available but cannot render — Puppeteer Chrome binary missing (ENOENT)", "detail": "/home/kali/.cache/puppeteer/chrome-headless-shell/linux_arm-148.0.7778.97/chrome-headless-shell-linux64/chrome-headless-shell not found"},
+      {"file": "design/architecture/system-architecture.md", "issue": "block 1 untested", "detail": "graph TD mermaid — syntax appears valid"},
+      {"file": "design/architecture/database-schema.md", "issue": "block 1 untested", "detail": "erDiagram mermaid — syntax appears valid"},
+      {"file": "design/architecture/autopilot-core-tech-design.md", "issue": "block 1 (ERD) and block 2 (stateDiagram-v2) untested", "detail": "Both syntax appear valid"}
+    ]
+  },
+  "d3": {
+    "pass": false,
+    "gaps": [
+      {"file": "application/modules/core/overview.md", "missing_sections": ["ENTIRE FILE — File does not exist"], "severity": "critical"},
+      {"file": "application/modules/core/architecture.md", "missing_sections": ["Header & Navigation", "Feature List (table)", "High-Level Architecture (Mermaid)", "Global Dependencies", "Skill Reference"], "severity": "high", "detail": "Has only Overview, Components, Dependencies — 3 sections vs required 5+"},
+      {"file": "application/modules/core/iteration-loop.md", "missing_sections": ["Sections 3-12 of 12-section template missing"], "severity": "high", "detail": "Only 5 sections: Description, User Story, Flow, API, Related Tests. Missing: Sequence Diagram, Data Model, Public Interface, Business Logic, Dependencies, Limitations, Compliance, UI/Layout, Implementation Tasks, Cross-References, Skill Reference"},
+      {"file": "application/modules/core/state-persistence.md", "missing_sections": ["Sections 3-12 missing"], "severity": "high", "detail": "Same as iteration-loop.md — minimal stub"},
+      {"file": "application/modules/core/supervised-mode.md", "missing_sections": ["Sections 3-12 missing"], "severity": "high", "detail": "Minimal stub"},
+      {"file": "application/modules/core/quality-gates.md", "missing_sections": ["Sections 3-12 missing"], "severity": "high", "detail": "Minimal stub"},
+      {"file": "application/modules/core/backpressure.md", "missing_sections": ["Sections 3-12 missing"], "severity": "high", "detail": "Minimal stub"},
+      {"file": "application/api/cli.md", "missing_sections": ["Global Standards", "OpenAPI Schema", "Examples", "Skill Reference"], "severity": "high", "detail": "Has Commands and Exit Codes only — no structured API spec"},
+      {"file": "application/testing/overview.md", "missing_sections": ["Test Strategy (detail)", "Skill Reference"], "severity": "medium", "detail": "Has pyramid, run commands, test data, key test files — but no structured strategy section or skill reference"}
+    ]
+  },
+  "d4": {
+    "pass": false,
+    "gaps": [
+      {"type": "missing_index_link", "detail": "application/README.md links to architecture, API, testing — but modules/README.md does not exist", "severity": "high"},
+      {"type": "missing_index_link", "detail": "No modules/README.md to link module overviews", "severity": "high"},
+      {"type": "missing_index_link", "detail": "No api/README.md to link API spec files", "severity": "high"},
+      {"type": "missing_index_link", "detail": "No testing/README.md to link test docs", "severity": "high"},
+      {"type": "missing_feature_link", "detail": "Module core has no overview.md to link feature files", "severity": "critical"},
+      {"type": "story_feature_coverage", "detail": "User stories (4) all map to feature docs — 4/4 covered", "severity": "pass"},
+      {"type": "feature_api_coverage", "detail": "All 5 features reference API in api/cli.md", "severity": "pass"},
+      {"type": "no_task_doc_path", "detail": "Implementation tasks exist in autopilot-core-decomposition.md with Source Docs column referencing design docs", "severity": "pass"}
+    ]
+  },
+  "d5": {
+    "pass": false,
+    "gaps": [
+      {"type": "missing_cross_link", "detail": "Feature docs (iteration-loop.md, etc.) do not link to API doc (api/cli.md) explicitly", "severity": "high"},
+      {"type": "missing_cross_link", "detail": "Feature docs do not link to test docs under testing/", "severity": "high"},
+      {"type": "missing_cross_link", "detail": "api/cli.md does not link back to feature docs", "severity": "high"},
+      {"type": "missing_cross_link", "detail": "testing/overview.md does not link to feature docs", "severity": "high"},
+      {"type": "has_cross_link", "detail": "cross-links.md provides a comprehensive traceability matrix — partially compensates", "severity": "info"}
+    ]
+  },
+  "d6": {
+    "pass": false,
+    "gaps": [
+      {"section": "Audience", "status": "present"},
+      {"section": "Objective", "status": "present"},
+      {"section": "Core Narrative Arc", "status": "present"},
+      {"section": "Slide Outline", "status": "partial", "detail": "Has 9-slide outline but missing required detail: message, evidence source, visual suggestion, speaker note per slide"},
+      {"section": "Key Claims with Sources", "status": "present", "detail": "4 claims with doc references"},
+      {"section": "Metrics/Assumptions/Risks", "status": "partial", "detail": "Has metrics and assumptions but no explicit risk section"},
+      {"section": "Visual Asset Guidance", "status": "missing", "detail": "No visual guidance for slide creation"},
+      {"section": "Exclusions", "status": "present"},
+      {"section": "Detailed Slide-by-Slide", "status": "missing", "detail": "Required format: title, message, evidence source, visual suggestion, speaker note"},
+      {"section": "Source links verification", "status": "unknown", "detail": "Claims reference problem-identification, market-sizing, feasibility docs — these exist"}
+    ]
+  },
+  "d7": {
+    "pass": false,
+    "gaps": [
+      {"type": "placeholder_content", "severity": "none", "detail": "No TODO/TBD/FIXME found in any content file — PASS"},
+      {"type": "naming_consistency", "severity": "pass", "detail": "Entity names consistent across files (Session, Iteration, IterationStep, Artifact)"},
+      {"type": "redundant_content", "severity": "low", "detail": "Sprint manifest (sprint-manifest.md) and roadmap (roadmap.md) have overlapping milestone information"},
+      {"type": "missing_diagrams_in_feature_docs", "severity": "high", "detail": "None of the 5 feature docs have Mermaid sequence diagrams, ERDs, or wireframe diagrams as required by the 12-section template"},
+      {"type": "minimal_feature_docs", "severity": "high", "detail": "Feature docs are 17-23 lines each — stubs rather than full 12-section documents"},
+      {"type": "story_ac_alignment", "severity": "pass", "detail": "Acceptance criteria align well with user stories — 3 AC per story"},
+      {"type": "api_cli_coverage", "severity": "medium", "detail": "api/cli.md documents implement (description), resume, sessions, approve, reject, config — but missing 'sessions show/delete/export' subcommands documented in navigation-structure.md"}
+    ],
+    "summary": "Content quality is reasonable with consistent naming and no stale TODOs. Major gaps are the minimal feature docs (5 vs 12 sections) and missing Mermaid diagrams."
+  },
+  "summary": {
+    "total_gaps": 42,
+    "critical": 2,
+    "high": 24,
+    "medium": 14,
+    "low": 2,
+    "status": "FAIL — requires remediation",
+    "recommendations": [
+      "CRITICAL: Create application/modules/core/overview.md with 5-section template",
+      "CRITICAL: Create application/modules/README.md, api/README.md, testing/README.md",
+      "HIGH: Expand all 5 feature docs to 12-section template with Mermaid sequence, ERD, wireframe diagrams",
+      "HIGH: Move test artifacts from design/testing/ to application/testing/ with per-feature test docs",
+      "HIGH: Replace ASCII diagrams in design/ux/ with valid Mermaid blocks",
+      "HIGH: Convert api/cli.md to full 6-section template with OpenAPI schema, examples, skill reference",
+      "HIGH: Add cross-links between feature docs, API spec, and testing docs in Header & Navigation sections",
+      "HIGH: Expand presentation-brief.md with slide-by-slide detail (message, evidence, visual, speaker notes) and visual asset guidance",
+      "MEDIUM: Move ADRs from top-level decisions/ to design/decisions/",
+      "MEDIUM: Move edge-cases to application/testing/core/",
+      "MEDIUM: Move BDD scenarios to application/testing/core/",
+      "MEDIUM: Resolve mmdc/puppeteer browser binary to validate all 4 Mermaid blocks"
+    ]
+  }
+}
