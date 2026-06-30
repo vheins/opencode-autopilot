@@ -12,7 +12,8 @@ The AUTOPILOT core module implements the iteration loop FSM (Plan → Code → R
 - **Iteration Engine**: FSM state machine for iteration steps
 - **Provider Abstraction**: AI model API communication layer
 - **Quality Gate Runner**: Linter and test execution
-- **State Persistence**: Disk-based session snapshots
+- **State Persistence**: MCP-based via `MCPClient` → `@vheins/local-memory-mcp` (SQLite-backed)
+- **MCP Client**: Spawns/manages the `local-memory-mcp` subprocess; provides `task-*` and `memory-*` convenience methods
 - **Backpressure Handler**: API rate limit management
 
 ## Plugin Integration
@@ -42,13 +43,13 @@ The plugin is published to npm as `@vheins/opencode-autopilot`. When added to th
 | **Iteration Engine** | `tool: { autopilot_iterate }` | Custom tool driving the Plan→Code→Review→Test→Commit FSM |
 | **Provider Abstraction** | `chat.params` / `provider` | Mutate AI provider params or provide a custom provider |
 | **Quality Gate Runner** | `tool.execute.after` / child_process | Run linters/tests after code-gen tools |
-| **State Persistence** | `directory` (PluginInput) | Read/write JSON snapshots to plugin data directory |
+| **State Persistence** | `config` / `MCPClient` | Persist via `@vheins/local-memory-mcp` subprocess (tasks + memories) |
 | **Backpressure Handler** | Internal (config) | Rate-limit tracking using config-observed API limits |
 
 ## Dependencies
 - `@opencode-ai/plugin` — Plugin type and hooks
-- `zlib` (built-in) — State compression
-- `crypto` (built-in) — SHA256 integrity checks
+- `@vheins/local-memory-mcp` — MCP server for state persistence (SQLite, semantic search, task/memory CRUD)
+- `crypto` (built-in) — UUID generation
 
 ## See Also
 - [CLI API Reference](../api/cli.md)

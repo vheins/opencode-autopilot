@@ -1,0 +1,44 @@
+{
+  "name": "@vheins/opencode-autopilot",
+  "version": "0.1.0",
+  "description": "Autonomous AI iteration loop plugin for opencode — Ralph Loop meets Copilot Autopilot",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "@vheins/local-memory-mcp": "^0.18.0"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.17.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.6"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "autopilot",
+    "ai",
+    "automation"
+  ],
+  "license": "MIT"
+}

@@ -22,7 +22,7 @@ graph TD
     QualityGates --> TestRunner[Vitest]
     
     SessionMgr --> StateStore[State Persistence]
-    StateStore --> Disk[Filesystem JSON]
+    StateStore --> MCP[local-memory-mcp SQLite]
     
     IterationEngine --> BPLogic[Backpressure Handler]
     BPLogic --> AIProvider
@@ -33,4 +33,5 @@ graph TD
 2. **Plugin registration**: Plugin is auto-detected from `.opencode/plugin/autopilot.ts` or explicitly registered via `opencode.json` → `"plugin": ["opencode-autopilot", { ... }]`
 3. **FSM-based iteration**: Deterministic state machine prevents invalid state transitions
 4. **Pluggable quality gates**: Child process execution for linter/test integration (not MCP-based)
-5. **JSON snapshot for state**: Simple, debuggable, compressible
+5. **MCP-based state persistence**: Uses `@vheins/local-memory-mcp` (SQLite-backed MCP server) instead of raw filesystem JSON; sessions stored as MCP tasks, durable knowledge as memories
+6. **Auto-spawned MCP subprocess**: AUTOPILOT spawns `@vheins/local-memory-mcp` as a subprocess via `npx` during the `config` hook — no manual MCP registration required

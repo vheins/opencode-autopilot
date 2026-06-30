@@ -28,6 +28,8 @@ Add to `opencode.json` (or `opencode.jsonc`):
 ```
 
 > **Note**: opencode auto-installs npm plugins via Bun at startup. Packages are cached in `~/.cache/opencode/node_modules/`. No user-side `npm install` is required.
+>
+> **MCP server**: AUTOPILOT auto-spawns `@vheins/local-memory-mcp` as a subprocess using `npx -y @vheins/local-memory-mcp` during its `config` hook. No manual MCP registration in `opencode.json` is needed — the plugin manages its own state backend.
 
 ## 3. Implementation
 
