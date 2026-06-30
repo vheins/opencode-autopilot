@@ -25,8 +25,7 @@ describe("StateManager", () => {
   const testConfig = {
     maxRetries: 3,
     baseDelay: 1000,
-    autoCommit: false,
-    confidenceThreshold: 70,
+    autoCommit: { enabled: false, confidenceThreshold: 80 },
     modelMapping: {},
   }
 

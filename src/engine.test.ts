@@ -25,7 +25,7 @@ describe("IterationEngine", () => {
 
   beforeEach(() => {
     stateManager = new StateManager(
-      { maxRetries: 3, baseDelay: 1000, autoCommit: false, confidenceThreshold: 70, modelMapping: {} },
+      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 }, modelMapping: {} },
       new MCPClient()
     )
     engine = new IterationEngine(stateManager, new MockProvider())

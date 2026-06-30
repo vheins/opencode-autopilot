@@ -1,12 +1,15 @@
 import type { Plugin, Config } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 import { z } from "zod"
+import fs from "fs"
 import { StateManager } from "./state.js"
 import { MCPClient } from "./mcp-client.js"
+import { Git } from "./git.js"
 import { IterationPhase } from "./types.js"
-import type { AutopilotConfig } from "./types.js"
+import type { AutopilotConfig, AutoCommitConfig } from "./types.js"
 
 import { ProviderFactory, type ProviderConfig } from "./provider.js"
+import { ModelRouter } from "./model-routing.js"
 
 // Re-export provider types for plugin consumers
 export type {
@@ -15,12 +18,16 @@ export type {
   AiProvider,
   ProviderConfig,
 } from "./provider.js"
+export type { AutoCommitConfig } from "./types.js"
 export { ProviderFactory, MockProvider, OpencodeProvider, PHASE_PROMPTS } from "./provider.js"
 
 // Import for local use and re-export
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 export type { PlanFile, PlanStep, ParsedPlan } from "./plan-parser.js"
 export { parsePlan, formatPlanForDisplay }
+import { calculateConfidence, shouldAutoCommit } from "./auto-commit.js"
+export type { ConfidenceScore } from "./auto-commit.js"
+export { calculateConfidence, shouldAutoCommit }
 import { parseCodeGenOutput, writeFiles } from "./codegen.js"
 export type { FileChange, CodeGenResult } from "./codegen.js"
 export { parseCodeGenOutput, writeFiles }
@@ -53,8 +60,7 @@ export { GateRunner, TypeCheckGate, LintGate, TestGate }
 const DEFAULT_CONFIG: AutopilotConfig = {
   maxRetries: 3,
   baseDelay: 1000,
-  autoCommit: false,
-  confidenceThreshold: 70,
+  autoCommit: { enabled: false, confidenceThreshold: 80 },
   modelMapping: {},
 }
 
@@ -72,14 +78,34 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
         (p: any) => Array.isArray(p) && p[0] === "@vheins/opencode-autopilot"
       )
       const options = Array.isArray(pluginConfig) ? pluginConfig[1] || {} : {}
-      const config: AutopilotConfig = { ...DEFAULT_CONFIG, ...options }
+      const rawAutoCommit = options.autoCommit
+      const config: AutopilotConfig = {
+        ...DEFAULT_CONFIG,
+        ...options,
+        autoCommit: rawAutoCommit !== undefined
+          ? (typeof rawAutoCommit === "boolean"
+            ? { enabled: rawAutoCommit, confidenceThreshold: DEFAULT_CONFIG.autoCommit.confidenceThreshold }
+            : { ...DEFAULT_CONFIG.autoCommit, ...rawAutoCommit as AutoCommitConfig })
+          : DEFAULT_CONFIG.autoCommit,
+      }
 
       if (!mcpClient) throw new Error("MCP client not created")
       await mcpClient.connect("npx", ["-y", "@vheins/local-memory-mcp"])
       stateManager = new StateManager(config, mcpClient)
       const providerFactory = new ProviderFactory()
+
+      // Set up multi-model routing when modelMapping is provided
+      const modelRouter = new ModelRouter(config.modelMapping)
+      if (Object.keys(config.modelMapping).length > 0) {
+        modelRouter.registerProviders(providerFactory)
+      }
+
       const provider = providerFactory.createProvider({ type: "mock" })
-      engine = new IterationEngine(stateManager, provider, { maxRetries: config.maxRetries })
+      engine = new IterationEngine(stateManager, provider, {
+        maxRetries: config.maxRetries,
+        autoCommit: config.autoCommit,
+        modelRouter,
+      })
 
       // State recovery on startup — restore sessions from MCP memory
       try {
@@ -328,6 +354,124 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
               message: state.hasPendingDiff
                 ? "Changes rejected. Regenerating code with feedback..."
                 : "Plan rejected. Regenerating with feedback...",
+            }),
+          }
+        },
+      }),
+
+      autopilot_commit: tool({
+        description:
+          "Commit the current AUTOPILOT session changes to git. " +
+          "Stages all changes and creates a commit with session metadata.",
+        args: {
+          sessionId: z.string().describe("Session ID to commit"),
+        },
+        execute: async ({ sessionId }) => {
+          if (!stateManager) throw new Error("AUTOPILOT not initialized")
+          const session = await stateManager.getSession(sessionId)
+          if (!session) {
+            return {
+              output: JSON.stringify({ error: "Session not found" }),
+            }
+          }
+          if (session.status === "completed") {
+            return {
+              output: JSON.stringify({
+                message: "Session already committed",
+                alreadyCompleted: true,
+              }),
+            }
+          }
+          const git = new Git(session.projectPath)
+
+          // Check nothing to commit (FIX-4.1)
+          const statusResult = await git.getStatus()
+          if (statusResult.success && statusResult.files.length === 0) {
+            return {
+              output: JSON.stringify({
+                message: "Nothing to commit",
+                nothingToCommit: true,
+              }),
+            }
+          }
+
+          // Safety check: scan project files for dangerous patterns before git add (FIX-3)
+          const safetyChecker = new SafetyChecker({
+            allowedDirs: [""],
+            protectedFiles: [
+              "package.json", "package-lock.json", "tsconfig.json",
+              ".gitignore", "opencode.json", "opencode.jsonc",
+              "node_modules/", ".git/", ".git",
+              ".env",
+            ],
+          })
+          try {
+            const projectFiles = await fs.promises.readdir(session.projectPath)
+            for (const file of projectFiles) {
+              const checkResult = safetyChecker.check(file, session.projectPath)
+              if (!checkResult.allowed) {
+                return {
+                  output: JSON.stringify({
+                    error: `Safety check failed: ${checkResult.reason}`,
+                  }),
+                }
+              }
+            }
+          } catch (err: unknown) {
+            return {
+              output: JSON.stringify({
+                error: `Safety check failed: ${err instanceof Error ? err.message : String(err)}`,
+              }),
+            }
+          }
+
+          const addResult = await git.add(["."])
+          if (!addResult.success) {
+            return {
+              output: JSON.stringify({
+                error: `Git add failed: ${addResult.error}`,
+              }),
+            }
+          }
+          const message = `feat(autopilot): ${session.featureDescription}\n\nSession: ${session.id}\nIteration: ${session.iterationCount}\nAuto-committed via AUTOPILOT`
+          const result = await git.commit(message)
+          if (result.success) {
+            // Try standard git output format: [branch hash] message (FIX-4.2)
+            const hashMatch = result.output.match(/\[[^\]]+ ([a-f0-9]+)\]/)
+            let commitHash: string
+            if (hashMatch) {
+              commitHash = hashMatch[1]
+            } else {
+              // Fallback: try to find any 40-char hex hash in the first line of output
+              const firstLine = result.output.split('\n')[0]
+              const hexMatch = firstLine.match(/\b([a-f0-9]{40})\b/)
+              commitHash = hexMatch ? hexMatch[1] : result.output.trim()
+            }
+
+            // Sync engine FSM state (FIX-2)
+            if (engine) {
+              const engineState = engine.getState()
+              if (engineState.sessionId === sessionId && engine.isActive()) {
+                try {
+                  await engine.transition(IterationPhase.Done)
+                } catch {
+                  // Engine FSM sync failed — state is still persisted via StateManager
+                }
+              }
+            }
+
+            await stateManager.updateSession(sessionId, { status: "completed" })
+            return {
+              output: JSON.stringify({
+                commitHash,
+                summary: message,
+                message: "Commit successful",
+              }),
+            }
+          }
+          return {
+            output: JSON.stringify({
+              error: `Commit failed: ${result.error}`,
             }),
           }
         },

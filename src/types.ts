@@ -52,11 +52,15 @@ export interface LintResult {
   output: string
 }
 
+export interface AutoCommitConfig {
+  enabled: boolean
+  confidenceThreshold: number
+}
+
 export interface AutopilotConfig {
   maxRetries: number
   baseDelay: number
-  autoCommit: boolean
-  confidenceThreshold: number
+  autoCommit: AutoCommitConfig
   modelMapping: Record<string, string>
 }
 
@@ -83,6 +87,7 @@ export const FSM_TRANSITIONS: FsmTransition[] = [
   { from: IterationPhase.Reviewing, to: IterationPhase.Testing },
   { from: IterationPhase.Reviewing, to: IterationPhase.Planning, guard: "Review failed, regenerate plan" },
   { from: IterationPhase.Reviewing, to: IterationPhase.Error },
+  { from: IterationPhase.Testing, to: IterationPhase.AwaitingApproval, guard: "All gates passed, confidence below threshold, awaiting approval" },
   { from: IterationPhase.Testing, to: IterationPhase.Committing },
   { from: IterationPhase.Testing, to: IterationPhase.Generating, guard: "Tests failed, regenerate code" },
   { from: IterationPhase.Testing, to: IterationPhase.Error },

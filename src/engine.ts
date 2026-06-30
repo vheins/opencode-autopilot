@@ -1,17 +1,25 @@
 import { FSM } from "./fsm.js"
-import { IterationPhase, type FsmEvent } from "./types.js"
+import { IterationPhase, type FsmEvent, type AutoCommitConfig } from "./types.js"
 import { StateManager } from "./state.js"
 import { type AiProvider, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 import { parseCodeGenOutput, writeFiles } from "./codegen.js"
 import type { DiffResult } from "./diff.js"
 import { GateRunner } from "./quality-gates.js"
+import { Git } from "./git.js"
 import { Presenter } from "./presenter.js"
+import { retryWithBackoff } from "./backoff.js"
+import { calculateConfidence, shouldAutoCommit } from "./auto-commit.js"
+import { ModelRouter } from "./model-routing.js"
+import fs from "fs"
+import { SafetyChecker } from "./safety.js"
 
 export interface EngineConfig {
   maxRetries: number
   maxRejections?: number
   model?: string
+  autoCommit?: AutoCommitConfig
+  modelRouter?: ModelRouter
 }
 
 export interface RejectionRecord {
@@ -152,7 +160,7 @@ export class IterationEngine {
   }
 
   private async executeCurrentPhase(): Promise<TransitionResult> {
-    const phase = this.fsm.currentPhase
+    let phase = this.fsm.currentPhase
     let output: string | undefined
 
     // Skip phases that don't need AI execution
@@ -186,15 +194,48 @@ export class IterationEngine {
           feedbackSection
       }
 
+      // Multi-model routing: select provider and model for this phase
+      let activeProvider = this.provider
+      let activeModel: string | undefined
+
+      if (this.config.modelRouter) {
+        const model = this.config.modelRouter.getModelForPhase(phase)
+        if (model !== "default") {
+          const routedProvider = this.config.modelRouter.tryGetProvider(phase)
+          if (routedProvider) {
+            activeProvider = routedProvider
+            activeModel = model
+          }
+        }
+      }
+
       const request: ProviderRequest = {
         phase,
         systemPrompt: enhancedPrompt,
         userPrompt: session?.featureDescription || "Execute current phase",
         context: { sessionId: this.currentSessionId || "" },
+        metadata: activeModel
+          ? {
+              model: activeModel,
+              providerType: this.config.modelRouter?.getProviderTypeForPhase(phase),
+            }
+          : undefined,
       }
 
       try {
-        const response = await this.provider.send(request)
+        const response = await retryWithBackoff(
+          () => activeProvider.send(request),
+          {
+            maxRetries: this.config.maxRetries,
+            baseDelayMs: 1000,
+            maxDelayMs: 30000,
+            onRetry: (error, attempt, delay) => {
+              console.warn(
+                `[engine] Provider call failed (attempt ${attempt}/${this.config.maxRetries}), retrying in ${delay}ms: ${error.message}`
+              )
+            },
+          }
+        )
         output = response.content
 
         // Store the output in MCP memory
@@ -252,11 +293,36 @@ export class IterationEngine {
       }
 
       if (gateResult.allPassed) {
+        // Calculate confidence score for auto-commit decision
+        const confidence = calculateConfidence(gateResult.results)
+        const autoCommitCfg = this.config.autoCommit
+
+        if (autoCommitCfg?.enabled && shouldAutoCommit(confidence, autoCommitCfg.confidenceThreshold)) {
+          // Auto-commit: confidence meets threshold, go directly to Committing
+          await this.stateManager.storeIterationContext(this.currentSessionId!, {
+            phase: IterationPhase.Testing,
+            confidenceScore: confidence,
+            autoCommitted: true,
+            allPassed: true,
+          })
+        } else if (autoCommitCfg?.enabled) {
+          // Auto-commit enabled but confidence below threshold — surface score, still commit
+          await this.stateManager.storeIterationContext(this.currentSessionId!, {
+            phase: IterationPhase.Testing,
+            confidenceScore: confidence,
+            autoCommitSkipped: true,
+            message: `Auto-commit confidence (${confidence.overall}%) below threshold (${autoCommitCfg.confidenceThreshold}%)`,
+          })
+        }
+        // In all cases when gates pass, proceed to Committing.
+        // When auto-commit is enabled and confidence is low, the confidence
+        // score is surfaced via the stored context for user visibility.
         this.fsm.transitionTo(IterationPhase.Committing)
         await this.stateManager.updateSession(this.currentSessionId!, {
           currentPhase: IterationPhase.Committing,
         })
-        return this.buildResult(IterationPhase.Committing, formattedOutput)
+        // Fall through to Committing handler below instead of returning early (FIX-1)
+        phase = IterationPhase.Committing
       } else {
         // Tests failed — regenerate code
         this.retryCount++
@@ -301,6 +367,70 @@ export class IterationEngine {
         currentPhase: IterationPhase.AwaitingApproval,
       })
       return this.buildResult(IterationPhase.AwaitingApproval, output)
+    }
+
+    // Committing phase — perform git commit
+    if (phase === IterationPhase.Committing) {
+      const session = this.currentSessionId ? await this.stateManager.getSession(this.currentSessionId) : null
+      if (!session) {
+        this.fsm.transitionTo(IterationPhase.Error)
+        return this.buildResult(IterationPhase.Error, "No active session for commit")
+      }
+
+      // Safety check: scan project files for dangerous patterns before git add (FIX-3)
+      const safetyChecker = new SafetyChecker({
+        allowedDirs: [""],
+        protectedFiles: [
+          "package.json", "package-lock.json", "tsconfig.json",
+          ".gitignore", "opencode.json", "opencode.jsonc",
+          "node_modules/", ".git/", ".git",
+          ".env",
+        ],
+      })
+      try {
+        const projectFiles = await fs.promises.readdir(session.projectPath)
+        for (const file of projectFiles) {
+          const checkResult = safetyChecker.check(file, session.projectPath)
+          if (!checkResult.allowed) {
+            this.fsm.transitionTo(IterationPhase.Error)
+            await this.stateManager.updateSession(session.id, { currentPhase: IterationPhase.Error })
+            return this.buildResult(IterationPhase.Error, `Safety check failed: ${checkResult.reason}`)
+          }
+        }
+      } catch (err: unknown) {
+        this.fsm.transitionTo(IterationPhase.Error)
+        await this.stateManager.updateSession(session.id, { currentPhase: IterationPhase.Error })
+        return this.buildResult(IterationPhase.Error, `Safety check failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
+
+      const git = new Git(session.projectPath)
+      const addResult = await git.add(["."])
+      if (!addResult.success) {
+        this.fsm.transitionTo(IterationPhase.Error)
+        await this.stateManager.updateSession(session.id, { currentPhase: IterationPhase.Error })
+        return this.buildResult(IterationPhase.Error, `Git add failed: ${addResult.error}`)
+      }
+
+      const message = `feat(autopilot): ${session.featureDescription}\n\nSession: ${session.id}\nIteration: ${session.iterationCount}\nAuto-committed via AUTOPILOT`
+      const commitResult = await git.commit(message)
+      if (!commitResult.success) {
+        this.fsm.transitionTo(IterationPhase.Error)
+        await this.stateManager.updateSession(session.id, { currentPhase: IterationPhase.Error })
+        return this.buildResult(IterationPhase.Error, `Git commit failed: ${commitResult.error}`)
+      }
+
+      // Update session
+      await this.stateManager.updateSession(session.id, { status: "completed" })
+
+      // Store commit result context
+      await this.stateManager.storeIterationContext(session.id, {
+        type: "commit",
+        commitOutput: commitResult.output,
+        success: true,
+      })
+
+      this.fsm.transitionTo(IterationPhase.Done)
+      return this.buildResult(IterationPhase.Done, commitResult.output)
     }
 
     return this.buildResult(phase, output)

@@ -8,6 +8,7 @@ export interface ProviderRequest {
   context: Record<string, any>
   maxTokens?: number
   temperature?: number
+  metadata?: Record<string, any>
 }
 
 /** Response from an AI provider */
@@ -94,6 +95,22 @@ Provide a detailed review with actionable feedback.`,
   [IterationPhase.Error]: "",
 }
 
+/**
+ * Infer the provider type from a model name.
+ *
+ * - "claude" → "anthropic"
+ * - "gpt", "o1", "o3" → "openai"
+ * - "opencode" → "opencode"
+ * - everything else → "mock"
+ */
+export function determineProviderType(model: string): ProviderConfig["type"] {
+  const lower = model.toLowerCase()
+  if (lower.includes("claude")) return "anthropic"
+  if (lower.includes("gpt") || lower.includes("o1") || lower.includes("o3")) return "openai"
+  if (lower.includes("opencode")) return "opencode"
+  return "mock"
+}
+
 /** Provider Factory */
 export class ProviderFactory {
   private providers: Map<string, AiProvider> = new Map()
@@ -118,15 +135,34 @@ export class ProviderFactory {
   createProvider(config: ProviderConfig): AiProvider {
     switch (config.type) {
       case "mock":
-        return new MockProvider()
+        return new MockProvider({ model: config.model })
       case "opencode":
         return new OpencodeProvider({ model: config.model })
       case "anthropic":
       case "openai":
         console.warn(`[provider] Direct ${config.type} integration not yet implemented, falling back to mock`)
-        return new MockProvider()
+        return new MockProvider({ model: config.model })
       default:
-        return new MockProvider()
+        return new MockProvider({ model: config.model })
+    }
+  }
+
+  /** Check whether a provider has been registered under the given name. */
+  hasProvider(name: string): boolean {
+    return this.providers.has(name)
+  }
+
+  /**
+   * Create and register one AiProvider instance per unique model name in the
+   * mapping, inferring the provider type from the model name.
+   */
+  registerProvidersForMapping(mapping: Record<string, string>): void {
+    const uniqueModels = new Set(Object.values(mapping))
+    for (const model of uniqueModels) {
+      if (this.hasProvider(model)) continue
+      const type = determineProviderType(model)
+      const provider = this.createProvider({ type, model })
+      this.registerProvider(model, provider)
     }
   }
 }
@@ -134,6 +170,11 @@ export class ProviderFactory {
 /** Mock provider for testing */
 export class MockProvider implements AiProvider {
   readonly name = "mock"
+  private configuredModel: string
+
+  constructor(options?: { model?: string }) {
+    this.configuredModel = options?.model ?? "mock-gpt-4"
+  }
 
   async send(request: ProviderRequest): Promise<ProviderResponse> {
     // Simulate AI latency
@@ -232,7 +273,7 @@ describe('Auth', () => {
     
     return {
       content,
-      model: "mock-gpt-4",
+      model: this.configuredModel,
       usage: {
         inputTokens: request.userPrompt.length / 4,
         outputTokens: content.length / 4,
