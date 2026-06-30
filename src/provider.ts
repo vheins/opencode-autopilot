@@ -40,13 +40,25 @@ export interface ProviderConfig {
 /** Default prompts per iteration phase */
 export const PHASE_PROMPTS: Record<IterationPhase, string> = {
   [IterationPhase.Idle]: "",
-  [IterationPhase.Planning]: `You are a senior software engineer. Analyze the following feature request and create a detailed implementation plan. Include:
-1. Files that need to be created or modified
-2. Key architectural decisions
-3. Potential risks and edge cases
-4. Estimated effort (S/M/L/XL)
+  [IterationPhase.Planning]: `You are a senior software engineer. Analyze the following feature request and create a detailed implementation plan.
 
-Output your plan as structured markdown.`,
+Output your plan in the following structured format:
+
+## Plan Summary
+One-line summary of what needs to be done.
+
+## Files
+- path/to/file.ts: What changes are needed (modify)
+- path/to/new.ts: What this new file does (create)
+
+## Steps
+1. Step description
+2. Step description
+
+## Risks
+- Risk description
+
+## Effort: S|M|L|XL`,
   [IterationPhase.AwaitingApproval]: "",
   [IterationPhase.Generating]: `You are a senior software engineer. Implement the approved plan. Write production-ready code following best practices. Return the code changes as a structured diff.`,
   [IterationPhase.Reviewing]: `You are a senior code reviewer. Review the generated code for:
@@ -89,7 +101,7 @@ export class ProviderFactory {
       case "mock":
         return new MockProvider()
       case "opencode":
-        return new OpencodeProvider()
+        return new OpencodeProvider({ model: config.model })
       case "anthropic":
       case "openai":
         console.warn(`[provider] Direct ${config.type} integration not yet implemented, falling back to mock`)
@@ -109,23 +121,24 @@ export class MockProvider implements AiProvider {
     await new Promise(resolve => setTimeout(resolve, 100))
 
     const responses: Record<string, string> = {
-      [IterationPhase.Planning]: `## Implementation Plan
+      [IterationPhase.Planning]: `## Plan Summary
+Implement JWT authentication with token verification and middleware
 
-### Files to Modify
-- \`src/auth.ts\`: Add JWT token verification
-- \`src/middleware.ts\`: Add auth middleware
-- \`tests/auth.test.ts\`: Add unit tests
+## Files
+- src/auth.ts: Add JWT token verification module (modify)
+- src/middleware.ts: Add auth middleware for route protection (modify)
+- tests/auth.test.ts: Add unit tests for auth flow (create)
 
-### Key Decisions
-- Use RS256 signing for JWT tokens
-- Store secrets in environment variables
-- Implement token refresh flow
+## Steps
+1. Implement JWT token verification in auth.ts
+2. Add auth middleware to protect API routes
+3. Write comprehensive unit tests
 
-### Risks
+## Risks
 - Token expiry edge cases need careful handling
 - Rate limiting on auth endpoints may impact UX
 
-### Effort: M`,
+## Effort: M`,
       [IterationPhase.Generating]: `Here are the code changes:
 
 \`\`\`diff
@@ -157,11 +170,26 @@ export class MockProvider implements AiProvider {
 export class OpencodeProvider implements AiProvider {
   readonly name = "opencode"
 
-  constructor(private options: { model?: string } = {}) {}
+  constructor(private options: { model?: string; client?: any } = {}) {}
 
   async send(request: ProviderRequest): Promise<ProviderResponse> {
-    // This will use opencode's built-in chat API
-    // For now, delegate to mock until opencode SDK integration is available
+    if (this.options.client?.sendMessage) {
+      try {
+        // Use opencode client's AI capabilities
+        const response = await this.options.client.sendMessage({
+          text: `${request.systemPrompt}\n\n${request.userPrompt}`,
+          model: this.options.model,
+        })
+        return {
+          content: typeof response === 'string' ? response : response.text,
+          model: this.options.model || "opencode",
+          usage: response.usage,
+        }
+      } catch (e) {
+        console.warn("[opencode-provider] Falling back to mock:", e)
+      }
+    }
+    // Fallback to mock
     const mock = new MockProvider()
     return mock.send(request)
   }

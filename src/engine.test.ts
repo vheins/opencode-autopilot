@@ -31,11 +31,11 @@ describe("IterationEngine", () => {
     engine = new IterationEngine(stateManager, new MockProvider())
   })
 
-  it("should start iteration and transition to Planning", async () => {
+  it("should start iteration and auto-transition to AwaitingApproval", async () => {
     const { session } = await stateManager.createSession("test", "/test")
     const result = await engine.startIteration(session.id)
-    expect(result.phase).toBe(IterationPhase.Planning)
-    expect(result.transitions).toContain(IterationPhase.AwaitingApproval)
+    expect(result.phase).toBe(IterationPhase.AwaitingApproval)
+    expect(result.transitions).toContain(IterationPhase.Generating)
   })
 
   it("should produce output from planning phase", async () => {
@@ -45,11 +45,13 @@ describe("IterationEngine", () => {
     expect(result.output!.length).toBeGreaterThan(0)
   })
 
-  it("should track FSM events", async () => {
+  it("should track FSM events through auto-transition", async () => {
     const { session } = await stateManager.createSession("test", "/test")
     const result = await engine.startIteration(session.id)
-    expect(result.events).toHaveLength(1)
+    // Idle→Planning, Planning→AwaitingApproval
+    expect(result.events).toHaveLength(2)
     expect(result.events[0].to).toBe(IterationPhase.Planning)
+    expect(result.events[1].to).toBe(IterationPhase.AwaitingApproval)
   })
 
   it("should report active when iteration is running", async () => {

@@ -16,7 +16,13 @@ export type {
   ProviderConfig,
 } from "./provider.js"
 export { ProviderFactory, MockProvider, OpencodeProvider, PHASE_PROMPTS } from "./provider.js"
+
+// Import for local use and re-export
+import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
+export type { PlanFile, PlanStep, ParsedPlan } from "./plan-parser.js"
+export { parsePlan, formatPlanForDisplay }
 import { IterationEngine } from "./engine.js"
+import { Presenter } from "./presenter.js"
 
 const DEFAULT_CONFIG: AutopilotConfig = {
   maxRetries: 3,
@@ -29,6 +35,7 @@ const DEFAULT_CONFIG: AutopilotConfig = {
 let stateManager: StateManager | null = null
 let mcpClient: MCPClient | null = null
 let engine: IterationEngine | null = null
+const presenter = new Presenter()
 
 export const autopilot: Plugin = async ({ project, directory, worktree }) => {
   mcpClient = new MCPClient()
@@ -108,20 +115,31 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
             }
           }
 
-          const result = await stateManager.createSession(
+          const createResult = await stateManager.createSession(
             description,
             context.directory,
           )
 
           // Start iteration engine
           if (engine) {
-            const engineState = await engine.startIteration(result.session.id)
+            const engineResult = await engine.startIteration(createResult.session.id)
+            if (engineResult.output) {
+              const parsed = parsePlan(engineResult.output)
+              return {
+                output: JSON.stringify({
+                  sessionId: createResult.session.id,
+                  status: "awaiting_approval",
+                  plan: formatPlanForDisplay(parsed),
+                  prompt: "Approve this plan? Use autopilot_approve or autopilot_reject",
+                }),
+              }
+            }
             return {
               output: JSON.stringify({
-                sessionId: result.session.id,
+                sessionId: createResult.session.id,
                 status: "planning",
-                phase: engineState.phase,
-                transitions: engineState.transitions,
+                phase: engineResult.phase,
+                transitions: engineResult.transitions,
                 message: `AUTOPILOT session started for: ${description}`,
               }),
             }
@@ -129,7 +147,7 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
 
           return {
             output: JSON.stringify({
-              sessionId: result.session.id,
+              sessionId: createResult.session.id,
               status: "planning",
               message: `AUTOPILOT session started for: ${description}`,
             }),
@@ -183,21 +201,57 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
           if (sessionId) {
             const session = await stateManager.getSession(sessionId)
             const engineState = engine?.getState() ?? null
+            const display = engineState
+              ? presenter.presentStatus(engineState.phase)
+              : presenter.presentStatus(IterationPhase.Idle, "No active engine")
             return {
               output: JSON.stringify(
                 session
-                  ? { session, engine: engineState }
-                  : { error: "Session not found", sessionId, engine: engineState },
+                  ? { session, engine: engineState, display }
+                  : { error: "Session not found", sessionId, engine: engineState, display },
               ),
             }
           }
           const sessions = await stateManager.listSessions()
+          const display = presenter.presentSessions(sessions)
           return {
             output: JSON.stringify({
               total: sessions.length,
               active: sessions.filter((s) => s.status === "active").length,
               sessions,
+              display,
             }),
+          }
+        },
+      }),
+
+      autopilot_approve: tool({
+        description:
+          "Approve the current iteration step and continue. Transitions from AwaitingApproval to Generating phase.",
+        args: {},
+        execute: async () => {
+          if (!engine) throw new Error("AUTOPILOT not initialized")
+          const result = await engine.transition(IterationPhase.Generating, { approved: true })
+          return {
+            output: JSON.stringify({ phase: result.phase, output: result.output }),
+          }
+        },
+      }),
+
+      autopilot_reject: tool({
+        description:
+          "Reject the current step with feedback for regeneration. Transitions back to Planning phase.",
+        args: {
+          feedback: z
+            .string()
+            .min(1)
+            .describe("Feedback for regeneration"),
+        },
+        execute: async ({ feedback }: { feedback: string }) => {
+          if (!engine) throw new Error("AUTOPILOT not initialized")
+          const result = await engine.transition(IterationPhase.Planning, { feedback })
+          return {
+            output: JSON.stringify({ phase: result.phase, message: "Plan rejected. Regenerating with feedback..." }),
           }
         },
       }),

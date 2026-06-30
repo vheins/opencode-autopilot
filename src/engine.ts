@@ -2,10 +2,17 @@ import { FSM } from "./fsm.js"
 import { IterationPhase, type FsmEvent } from "./types.js"
 import { StateManager } from "./state.js"
 import { type AiProvider, ProviderFactory, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
+import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 
 export interface EngineConfig {
   maxRetries: number
+  maxRejections?: number
   model?: string
+}
+
+export interface RejectionRecord {
+  feedback: string
+  timestamp: string
 }
 
 export interface TransitionResult {
@@ -22,16 +29,17 @@ export class IterationEngine {
   private config: EngineConfig
   private currentSessionId: string | null = null
   private retryCount: number = 0
+  private rejectionCounts = new Map<string, { count: number; history: RejectionRecord[] }>()
 
   constructor(
     stateManager: StateManager,
     provider: AiProvider,
-    config: EngineConfig = { maxRetries: 3 }
+    config: EngineConfig = { maxRetries: 3, maxRejections: 3 }
   ) {
     this.fsm = new FSM()
     this.stateManager = stateManager
     this.provider = provider
-    this.config = config
+    this.config = { maxRejections: 3, ...config }
   }
 
   async startIteration(sessionId: string): Promise<TransitionResult> {
@@ -62,8 +70,25 @@ export class IterationEngine {
         throw new Error("Plan must be approved before generating")
       }
       if (targetPhase === IterationPhase.Planning && metadata?.feedback) {
+        // Enforce max rejection limit
+        const rejectionData = this.rejectionCounts.get(this.currentSessionId) ?? { count: 0, history: [] }
+        if (rejectionData.count >= (this.config.maxRejections ?? 3)) {
+          throw new Error(
+            `Max rejections (${this.config.maxRejections}) exceeded for session ${this.currentSessionId.slice(0, 8)}`
+          )
+        }
+
+        // Increment rejection count and store feedback
+        const record: RejectionRecord = { feedback: metadata.feedback, timestamp: new Date().toISOString() }
+        rejectionData.count++
+        rejectionData.history.push(record)
+        this.rejectionCounts.set(this.currentSessionId, rejectionData)
+
+        // Persist rejection feedback in MCP
         await this.stateManager.storeIterationContext(this.currentSessionId, {
+          type: "rejection",
           feedback: metadata.feedback,
+          rejectionCount: rejectionData.count,
           phase: IterationPhase.AwaitingApproval,
         })
       }
@@ -105,9 +130,26 @@ export class IterationEngine {
         ? await this.stateManager.getSession(this.currentSessionId)
         : null
 
+      // Build system prompt with accumulated rejection feedback if available
+      const rejectionData = this.currentSessionId
+        ? this.rejectionCounts.get(this.currentSessionId)
+        : undefined
+
+      let enhancedPrompt = prompt
+      if (phase === IterationPhase.Planning && rejectionData && rejectionData.history.length > 0) {
+        const feedbackSection = rejectionData.history
+          .map((r, i) => `Rejection ${i + 1} (${r.timestamp}): ${r.feedback}`)
+          .join("\n")
+        enhancedPrompt =
+          prompt +
+          `\n\n## Previous Rejection Feedback\n` +
+          `The following feedback was provided on previous plan iterations. Address each point in the new plan:\n\n` +
+          feedbackSection
+      }
+
       const request: ProviderRequest = {
         phase,
-        systemPrompt: prompt,
+        systemPrompt: enhancedPrompt,
         userPrompt: session?.featureDescription || "Execute current phase",
         context: { sessionId: this.currentSessionId || "" },
       }
@@ -129,6 +171,21 @@ export class IterationEngine {
         await this.handleError(error)
         return this.buildResult(IterationPhase.Error, `Provider error: ${error.message}`)
       }
+    }
+
+    // After successful provider response for Planning phase — parse, store, auto-transition
+    if (phase === IterationPhase.Planning && output) {
+      const parsed = parsePlan(output)
+      await this.stateManager.storeIterationContext(this.currentSessionId!, {
+        phase: IterationPhase.Planning,
+        parsedPlan: parsed,
+        formattedPlan: formatPlanForDisplay(parsed),
+      })
+      this.fsm.transitionTo(IterationPhase.AwaitingApproval)
+      await this.stateManager.updateSession(this.currentSessionId!, {
+        currentPhase: IterationPhase.AwaitingApproval,
+      })
+      return this.buildResult(IterationPhase.AwaitingApproval, output)
     }
 
     return this.buildResult(phase, output)
