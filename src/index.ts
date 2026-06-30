@@ -3,13 +3,11 @@ import { tool } from "@opencode-ai/plugin"
 import { z } from "zod"
 import fs from "fs"
 import { StateManager } from "./state.js"
-import { MCPClient } from "./mcp-client.js"
 import { Git } from "./git.js"
 import { IterationPhase } from "./types.js"
 import type { AutopilotConfig, AutoCommitConfig } from "./types.js"
 
-import { ProviderFactory, type ProviderConfig } from "./provider.js"
-import { ModelRouter } from "./model-routing.js"
+import type { ProviderConfig } from "./provider.js"
 
 // Re-export provider types for plugin consumers
 export type {
@@ -19,7 +17,7 @@ export type {
   ProviderConfig,
 } from "./provider.js"
 export type { AutoCommitConfig } from "./types.js"
-export { ProviderFactory, MockProvider, OpencodeProvider, PHASE_PROMPTS } from "./provider.js"
+export { MockProvider, PHASE_PROMPTS } from "./provider.js"
 
 // Import for local use and re-export
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
@@ -61,17 +59,13 @@ const DEFAULT_CONFIG: AutopilotConfig = {
   maxRetries: 3,
   baseDelay: 1000,
   autoCommit: { enabled: false, confidenceThreshold: 80 },
-  modelMapping: {},
 }
 
 let stateManager: StateManager | null = null
-let mcpClient: MCPClient | null = null
 let engine: IterationEngine | null = null
 const presenter = new Presenter()
 
 export const autopilot: Plugin = async ({ project, directory, worktree }) => {
-  mcpClient = new MCPClient()
-
   return {
     config: async (cfg: Config) => {
       const pluginConfig = cfg?.plugin?.find(
@@ -89,25 +83,13 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
           : DEFAULT_CONFIG.autoCommit,
       }
 
-      if (!mcpClient) throw new Error("MCP client not created")
-      await mcpClient.connect("npx", ["-y", "@vheins/local-memory-mcp"])
-      stateManager = new StateManager(config, mcpClient)
-      const providerFactory = new ProviderFactory()
-
-      // Set up multi-model routing when modelMapping is provided
-      const modelRouter = new ModelRouter(config.modelMapping)
-      if (Object.keys(config.modelMapping).length > 0) {
-        modelRouter.registerProviders(providerFactory)
-      }
-
-      const provider = providerFactory.createProvider({ type: "mock" })
-      engine = new IterationEngine(stateManager, provider, {
+      stateManager = new StateManager(config, directory)
+      engine = new IterationEngine(stateManager, {
         maxRetries: config.maxRetries,
         autoCommit: config.autoCommit,
-        modelRouter,
       })
 
-      // State recovery on startup — restore sessions from MCP memory
+      // State recovery on startup — restore sessions from file-based persistence
       try {
         const count = await stateManager.loadState()
         if (count > 0) {

@@ -1,37 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { StateManager } from "./state.js"
-import { MCPClient } from "./mcp-client.js"
 import { IterationPhase } from "./types.js"
-
-// Mock MCPClient
-vi.mock("./mcp-client.js", () => ({
-  MCPClient: vi.fn(() => ({
-    createSessionTask: vi.fn(),
-    updateSessionTask: vi.fn(),
-    listSessionTasks: vi.fn(),
-    storeMemory: vi.fn(),
-    searchMemory: vi.fn(),
-    getMemoryDetail: vi.fn(),
-    getTask: vi.fn(),
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  })),
-}))
+import fs from "fs"
+import path from "path"
+import os from "os"
 
 describe("StateManager", () => {
   let stateManager: StateManager
-  let mockMCP: MCPClient
+  let testDir: string
 
   const testConfig = {
     maxRetries: 3,
     baseDelay: 1000,
     autoCommit: { enabled: false, confidenceThreshold: 80 },
-    modelMapping: {},
   }
 
-  beforeEach(() => {
-    mockMCP = new MCPClient()
-    stateManager = new StateManager(testConfig, mockMCP)
+  beforeEach(async () => {
+    testDir = path.join(os.tmpdir(), `autopilot-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await fs.promises.mkdir(testDir, { recursive: true })
+    stateManager = new StateManager(testConfig, testDir)
   })
 
   describe("createSession", () => {
@@ -43,7 +30,6 @@ describe("StateManager", () => {
       expect(result.session.status).toBe("active")
       expect(result.session.currentPhase).toBe(IterationPhase.Idle)
       expect(result.session.id).toBeTruthy()
-      expect(result.mcpTaskCode).toMatch(/^AUTOPILOT-SESSION-\d+$/)
     })
 
     it("should throw on empty description", async () => {
@@ -54,10 +40,13 @@ describe("StateManager", () => {
       await expect(stateManager.createSession("test", "")).rejects.toThrow()
     })
 
-    it("should store session in MCP", async () => {
+    it("should persist session to file", async () => {
       await stateManager.createSession("Test feature", "/test")
-      expect(mockMCP.storeMemory).toHaveBeenCalled()
-      expect(mockMCP.createSessionTask).toHaveBeenCalled()
+      const filePath = path.join(testDir, ".autopilot", "sessions.json")
+      const content = await fs.promises.readFile(filePath, "utf-8")
+      const sessions = JSON.parse(content)
+      expect(sessions).toHaveLength(1)
+      expect(sessions[0].featureDescription).toBe("Test feature")
     })
   })
 
@@ -112,8 +101,6 @@ describe("StateManager", () => {
       const { session } = await stateManager.createSession("test", "/test")
       await stateManager.updateSession(session.id, { status: "paused" })
       const result = await stateManager.resumeSession(session.id)
-      // recovered is false because session is in local cache (not loaded from MCP)
-      expect(result.recovered).toBe(false)
       expect(result.session.status).toBe("active")
     })
 
@@ -141,6 +128,47 @@ describe("StateManager", () => {
       const resumable = await stateManager.listResumableSessions()
       expect(resumable).toHaveLength(2)
       expect(resumable.every((s: any) => ["active", "paused"].includes(s.status))).toBe(true)
+    })
+  })
+
+  describe("loadState", () => {
+    it("should recover sessions from file", async () => {
+      await stateManager.createSession("Feature 1", "/test")
+      await stateManager.createSession("Feature 2", "/test")
+
+      // Create a new StateManager to test recovery
+      const sm2 = new StateManager(testConfig, testDir)
+      const count = await sm2.loadState()
+      expect(count).toBe(2)
+
+      const sessions = await sm2.listSessions()
+      expect(sessions).toHaveLength(2)
+    })
+  })
+
+  describe("integrityCheck", () => {
+    it("should pass for empty file", async () => {
+      const result = await stateManager.integrityCheck()
+      expect(result.ok).toBe(true)
+    })
+
+    it("should pass for valid sessions file", async () => {
+      await stateManager.createSession("test", "/test")
+      const result = await stateManager.integrityCheck()
+      expect(result.ok).toBe(true)
+    })
+  })
+
+  describe("storeIterationContext", () => {
+    it("should store context to file", async () => {
+      const { session } = await stateManager.createSession("test", "/test")
+      await stateManager.storeIterationContext(session.id, { key: "value" })
+
+      const ctxPath = path.join(testDir, ".autopilot", `context-${session.id}.json`)
+      const content = await fs.promises.readFile(ctxPath, "utf-8")
+      const data = JSON.parse(content)
+      expect(data.key).toBe("value")
+      expect(data.sessionId).toBe(session.id)
     })
   })
 })

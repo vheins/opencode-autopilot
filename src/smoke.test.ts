@@ -29,9 +29,9 @@ describe("Module exports", () => {
     expect(typeof mod.autopilot).toBe("function")
   })
 
-  it("exports ProviderFactory class", async () => {
+  it("exports MockProvider class", async () => {
     const mod = await import("./index.js")
-    expect(mod.ProviderFactory).toBeDefined()
+    expect(mod.MockProvider).toBeDefined()
   })
 
   it("exports parsePlan and formatPlanForDisplay", async () => {

@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { IterationEngine } from "./engine.js"
 import { StateManager } from "./state.js"
-import { MCPClient } from "./mcp-client.js"
-import { MockProvider } from "./provider.js"
 import { IterationPhase, type Session } from "./types.js"
 import fs from "fs"
+import path from "path"
+import os from "os"
 
 // Mock Git at module level to control add/commit behavior
 vi.mock("./git.js", () => ({
@@ -14,27 +14,16 @@ vi.mock("./git.js", () => ({
 // Import after mock
 import { Git } from "./git.js"
 
-vi.mock("./mcp-client.js", () => ({
-  MCPClient: vi.fn(() => ({
-    createSessionTask: vi.fn(),
-    updateSessionTask: vi.fn(),
-    listSessionTasks: vi.fn(),
-    storeMemory: vi.fn(),
-    searchMemory: vi.fn(),
-    getMemoryDetail: vi.fn(),
-    getTask: vi.fn(),
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  })),
-}))
-
 describe("Autopilot Commit", () => {
   let engine: IterationEngine
   let stateManager: StateManager
+  let testDir: string
   let mockGitInstance: { add: ReturnType<typeof vi.fn>; commit: ReturnType<typeof vi.fn> }
   let readdirSpy: ReturnType<typeof vi.spyOn>
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    testDir = path.join(os.tmpdir(), `autopilot-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await fs.promises.mkdir(testDir, { recursive: true })
     vi.restoreAllMocks()
     readdirSpy = vi.spyOn(fs.promises, "readdir").mockResolvedValue(["src", "tests", "lib"] as any)
 
@@ -45,10 +34,10 @@ describe("Autopilot Commit", () => {
     vi.mocked(Git).mockImplementation(() => mockGitInstance as any)
 
     stateManager = new StateManager(
-      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 }, modelMapping: {} },
-      new MCPClient(),
+      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 } },
+      testDir,
     )
-    engine = new IterationEngine(stateManager, new MockProvider())
+    engine = new IterationEngine(stateManager)
   })
 
   describe("engine Committing handler — success path", () => {
@@ -88,7 +77,7 @@ describe("Autopilot Commit", () => {
       expect(result.phase).toBe(IterationPhase.Error)
       expect(result.output).toContain("Git add failed")
 
-      // Verify session was persisted with Error phase (FIX-COMMIT-001)
+      // Verify session was persisted with Error phase
       const updatedSession = await stateManager.getSession(session.id)
       expect(updatedSession?.currentPhase).toBe(IterationPhase.Error)
     })
@@ -111,7 +100,7 @@ describe("Autopilot Commit", () => {
       expect(result.phase).toBe(IterationPhase.Error)
       expect(result.output).toContain("Git commit failed")
 
-      // Verify session was persisted with Error phase (FIX-COMMIT-001)
+      // Verify session was persisted with Error phase
       const updatedSession = await stateManager.getSession(session.id)
       expect(updatedSession?.currentPhase).toBe(IterationPhase.Error)
     })
@@ -156,6 +145,7 @@ describe("Autopilot Commit", () => {
         commitOutput: "[main abc1234] feat: test feature\n 1 file changed",
         success: true,
       })
+      storeSpy.mockRestore()
     })
   })
 

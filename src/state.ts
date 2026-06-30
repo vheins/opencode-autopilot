@@ -1,24 +1,36 @@
 import type { Session, CreateSessionResult, AutopilotConfig, SessionStatus } from "./types.js"
 import { IterationPhase } from "./types.js"
-import { MCPClient } from "./mcp-client.js"
-import { retryWithBackoff } from "./backoff.js"
+import fs from "fs"
+import path from "path"
 
 export class StateManager {
-  private mcp: MCPClient
   private config: AutopilotConfig
+  private projectDir: string
+  private sessionsFilePath: string
   private localCache = new Map<string, Session>()
 
-  async storeIterationContext(sessionId: string, context: Record<string, any>): Promise<void> {
-    await this.mcp.storeMemory(
-      `Iteration: ${sessionId}`,
-      JSON.stringify({ sessionId, ...context, timestamp: new Date().toISOString() }),
-      ["autopilot-iteration", `session-${sessionId}`]
-    )
+  constructor(config: AutopilotConfig, projectDir: string) {
+    this.config = config
+    this.projectDir = projectDir
+    this.sessionsFilePath = path.join(projectDir, ".autopilot", "sessions.json")
   }
 
-  constructor(config: AutopilotConfig, mcpClient: MCPClient) {
-    this.config = config
-    this.mcp = mcpClient
+  private async ensureDir(): Promise<void> {
+    await fs.promises.mkdir(path.dirname(this.sessionsFilePath), { recursive: true })
+  }
+
+  async storeIterationContext(sessionId: string, context: Record<string, any>): Promise<void> {
+    await this.ensureDir()
+    const filePath = path.join(this.projectDir, ".autopilot", `context-${sessionId}.json`)
+    let existing: Record<string, any> = {}
+    try {
+      const raw = await fs.promises.readFile(filePath, "utf-8")
+      existing = JSON.parse(raw)
+    } catch {
+      // File doesn't exist yet, start fresh
+    }
+    const data = { ...existing, ...context, sessionId, timestamp: new Date().toISOString() }
+    await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8")
   }
 
   async createSession(description: string, projectPath: string): Promise<CreateSessionResult> {
@@ -31,8 +43,6 @@ export class StateManager {
     }
 
     const now = new Date().toISOString()
-    const timestamp = Date.now()
-    const taskCode = `AUTOPILOT-SESSION-${timestamp}`
 
     const session: Session = {
       id: crypto.randomUUID(),
@@ -46,33 +56,10 @@ export class StateManager {
       metadata: {},
     }
 
-    // Attempt MCP persistence with graceful fallback
-    try {
-      await retryWithBackoff(
-        () => this.mcp.createSessionTask(description.trim(), projectPath, taskCode, "active"),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
-      )
-    } catch (err) {
-      console.warn(`[StateManager] MCP task-create failed, falling back to local cache: ${(err as Error).message}`)
-    }
-
-    try {
-      await retryWithBackoff(
-        () =>
-          this.mcp.storeMemory(
-            `Session: ${description.trim()}`,
-            JSON.stringify(session, null, 2),
-            ["autopilot-session"]
-          ),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
-      )
-    } catch (err) {
-      console.warn(`[StateManager] MCP memory-store failed, session still cached locally: ${(err as Error).message}`)
-    }
-
     this.localCache.set(session.id, session)
+    await this.saveState()
 
-    return { session, mcpTaskCode: taskCode }
+    return { session }
   }
 
   async getSession(id: string): Promise<Session | undefined> {
@@ -93,205 +80,98 @@ export class StateManager {
       lastActivity: new Date().toISOString(),
     }
     this.localCache.set(id, updated)
-
-    // Sync to MCP as memory snapshot
-    try {
-      await retryWithBackoff(
-        () =>
-          this.mcp.storeMemory(
-            `Session Update: ${updated.featureDescription}`,
-            JSON.stringify(updated, null, 2),
-            ["autopilot-session"]
-          ),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
-      )
-    } catch (err) {
-      console.warn(`[StateManager] MCP memory-store failed during update, local cache intact: ${(err as Error).message}`)
-    }
+    await this.saveState()
 
     return updated
   }
 
   async deleteSession(id: string): Promise<boolean> {
-    return this.localCache.delete(id)
+    const result = this.localCache.delete(id)
+    if (result) await this.saveState()
+    return result
   }
 
   /**
-   * Force sync all cached sessions to MCP memory.
-   * Gracefully handles MCP failures — local cache remains intact.
+   * Persist all cached sessions to the JSON file.
    */
   async saveState(): Promise<void> {
+    await this.ensureDir()
     const sessions = Array.from(this.localCache.values())
-    for (const session of sessions) {
-      await this.saveSession(session)
-    }
+    await fs.promises.writeFile(this.sessionsFilePath, JSON.stringify(sessions, null, 2), "utf-8")
   }
 
   /**
-   * On startup, load all existing sessions from MCP memory into local cache.
-   * Handles: MCP failures (fallback to cache), data corruption (log + skip),
-   * duplicate sessions (merge by lastActivity timestamp).
-   * @returns number of sessions recovered
+   * Load sessions from the JSON file into the local cache.
+   * @returns number of sessions loaded
    */
   async loadState(): Promise<number> {
     try {
-      const results = await this.mcp.searchMemory("autopilot-session", ["autopilot-session"])
-      if (!results) return 0
-
-      const rawList: any[] = Array.isArray(results) ? results : (results as any).results ?? []
-      if (rawList.length === 0) return 0
-
-      let loadedCount = 0
-
-      for (const entry of rawList) {
-        const memId: string | undefined = entry?.id ?? entry?.memory_id
-        if (!memId) continue
-
-        try {
-          const detail = await this.mcp.getMemoryDetail(memId)
-          if (!detail?.content) continue
-
-          const mcpSession: Session = JSON.parse(detail.content)
-
-          // Validate minimum required fields
-          if (!mcpSession.id || !mcpSession.lastActivity) {
-            console.warn(`[StateManager] Skipping corrupted memory ${memId}: missing required fields`)
-            continue
-          }
-
-          // Merge duplicates by lastActivity timestamp (newer wins)
-          const existing = this.localCache.get(mcpSession.id)
-          if (!existing || new Date(mcpSession.lastActivity) > new Date(existing.lastActivity)) {
-            this.localCache.set(mcpSession.id, mcpSession)
-            loadedCount++
-          }
-        } catch (parseErr) {
-          console.warn(`[StateManager] Skipping corrupted memory ${memId}: ${(parseErr as Error).message}`)
+      const content = await fs.promises.readFile(this.sessionsFilePath, "utf-8")
+      const sessions: Session[] = JSON.parse(content)
+      if (!Array.isArray(sessions)) return 0
+      this.localCache.clear()
+      for (const session of sessions) {
+        if (session.id) {
+          this.localCache.set(session.id, session)
         }
       }
-
-      return loadedCount
-    } catch (err) {
-      console.warn(`[StateManager] MCP unavailable during loadState, using local cache only: ${(err as Error).message}`)
+      return this.localCache.size
+    } catch (err: any) {
+      if (err.code === "ENOENT") return 0
+      console.warn(`[StateManager] Failed to load state: ${err.message}`)
       return 0
     }
   }
 
   /**
-   * Verify session data integrity between local cache and MCP.
-   * Reports mismatches, missing sessions, and parse errors.
-   * Does NOT modify any data.
+   * Verify session data integrity of the JSON file.
    */
   async integrityCheck(): Promise<{ ok: boolean; issues: string[] }> {
     const issues: string[] = []
 
     try {
-      const results = await this.mcp.searchMemory("autopilot-session", ["autopilot-session"])
-      const mcpSessionIds = new Set<string>()
-
-      const rawList: any[] = Array.isArray(results) ? results : (results as any).results ?? []
-
-      for (const entry of rawList) {
-        const memId: string | undefined = entry?.id ?? entry?.memory_id
-        if (!memId) continue
-
-        try {
-          const detail = await this.mcp.getMemoryDetail(memId)
-          if (!detail?.content) {
-            issues.push(`Memory ${memId} has no content`)
-            continue
-          }
-
-          const mcpSession: Session = JSON.parse(detail.content)
-          if (!mcpSession.id) {
-            issues.push(`Memory ${memId} content missing session id`)
-            continue
-          }
-
-          mcpSessionIds.add(mcpSession.id)
-          const cached = this.localCache.get(mcpSession.id)
-
-          if (!cached) {
-            issues.push(`Session ${mcpSession.id} exists in MCP but not in local cache`)
-          } else if (cached.lastActivity !== mcpSession.lastActivity) {
-            issues.push(`Session ${mcpSession.id} lastActivity mismatch: cache=${cached.lastActivity}, mcp=${mcpSession.lastActivity}`)
-          }
-        } catch (parseErr) {
-          issues.push(`Memory ${memId} content is not valid JSON: ${(parseErr as Error).message}`)
+      const content = await fs.promises.readFile(this.sessionsFilePath, "utf-8")
+      const sessions: Session[] = JSON.parse(content)
+      if (!Array.isArray(sessions)) {
+        issues.push("Sessions file does not contain an array")
+        return { ok: false, issues }
+      }
+      for (const session of sessions) {
+        if (!session.id || !session.lastActivity) {
+          issues.push(`Session missing required fields (id or lastActivity)`)
         }
       }
-
-      // Sessions in cache but missing from MCP
-      for (const [id] of this.localCache) {
-        if (!mcpSessionIds.has(id)) {
-          issues.push(`Session ${id} exists in local cache but not in MCP`)
-        }
+    } catch (err: any) {
+      if (err.code === "ENOENT") {
+        return { ok: true, issues: [] }
       }
-    } catch (err) {
-      issues.push(`MCP unavailable during integrity check: ${(err as Error).message}`)
+      issues.push(`Failed to read sessions file: ${err.message}`)
     }
 
     return { ok: issues.length === 0, issues }
   }
 
   /**
-   * Persist a single session to MCP memory with error handling.
+   * Persist a single session to local cache and file.
    */
   async saveSession(session: Session): Promise<void> {
-    try {
-      await this.mcp.storeMemory(
-        `Session: ${session.featureDescription}`,
-        JSON.stringify(session, null, 2),
-        ["autopilot-session"],
-      )
-    } catch (err) {
-      console.warn(`[StateManager] Failed to save session ${session.id} to MCP: ${(err as Error).message}`)
-    }
+    this.localCache.set(session.id, session)
+    await this.saveState()
   }
 
   /**
-   * Load a single session from MCP by memory search.
-   * Checks local cache first before querying MCP.
+   * Load a single session — checks local cache first, then reloads from file.
    */
   async loadSession(id: string): Promise<Session | undefined> {
-    // Fast path — already cached
     const cached = this.localCache.get(id)
     if (cached) return cached
 
-    // Search MCP memory for this session ID
-    try {
-      const results = await this.mcp.searchMemory(id, ["autopilot-session"])
-      const rawList: any[] = Array.isArray(results) ? results : (results as any).results ?? []
-
-      for (const entry of rawList) {
-        const memId: string | undefined = entry?.id ?? entry?.memory_id
-        if (!memId) continue
-
-        const detail = await this.mcp.getMemoryDetail(memId)
-        if (!detail?.content) continue
-
-        const session: Session = JSON.parse(detail.content)
-        if (session.id === id) {
-          this.localCache.set(id, session)
-          return session
-        }
-      }
-    } catch (err) {
-      console.warn(`[StateManager] MCP unavailable during loadSession(${id}): ${(err as Error).message}`)
-    }
-
-    return undefined
+    await this.loadState()
+    return this.localCache.get(id)
   }
 
   /**
    * Resume an interrupted session to its last known state.
-   *
-   * 1. Finds session by ID (cache first, then MCP via loadSession)
-   * 2. Runs integrityCheck() to detect MCP/cache inconsistencies
-   * 3. Returns error for "completed" or "failed" sessions
-   * 4. Flags "active" sessions idle >30min as stale (still resumes)
-   * 5. Reconstructs IterationContext from session's currentPhase + metadata
-   * 6. Updates session status → "active", refreshes lastActivity
    *
    * @returns session + recovery metadata (recovered flag, warnings)
    * @throws if session not found or in terminal state
@@ -300,7 +180,7 @@ export class StateManager {
     const warnings: string[] = []
     let recovered = false
 
-    // Step 1: Find session — cache first, then MCP
+    // Find session — cache first, then file
     let session = this.localCache.get(id)
     if (!session) {
       const loaded = await this.loadSession(id)
@@ -311,7 +191,7 @@ export class StateManager {
       recovered = true
     }
 
-    // Step 2: Check terminal states
+    // Check terminal states
     if (session.status === "completed") {
       throw new Error(`Session ${id} is already completed and cannot be resumed`)
     }
@@ -319,17 +199,7 @@ export class StateManager {
       throw new Error(`Session ${id} is in failed state and cannot be resumed`)
     }
 
-    // Step 3: Integrity check — non-fatal, collect issues as warnings
-    try {
-      const integrity = await this.integrityCheck()
-      if (!integrity.ok) {
-        warnings.push(...integrity.issues.map(i => `Integrity: ${i}`))
-      }
-    } catch (err) {
-      warnings.push(`Integrity check failed: ${(err as Error).message}`)
-    }
-
-    // Step 4: Check for stale session (>30min idle)
+    // Check for stale session (>30min idle)
     const staleThresholdMs = 30 * 60 * 1000
     const lastActivity = new Date(session.lastActivity).getTime()
     const idleMs = Date.now() - lastActivity
@@ -340,7 +210,7 @@ export class StateManager {
       )
     }
 
-    // Step 5: Update status to active, refresh lastActivity
+    // Update status to active, refresh lastActivity
     const updatedSession = await this.updateSession(id, {
       status: "active",
       lastActivity: new Date().toISOString(),

@@ -1,41 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { IterationEngine } from "./engine.js"
 import { StateManager } from "./state.js"
-import { MCPClient } from "./mcp-client.js"
-import { MockProvider } from "./provider.js"
 import { IterationPhase } from "./types.js"
 import { parsePlan } from "./plan-parser.js"
 import { Presenter } from "./presenter.js"
-
-vi.mock("./mcp-client.js", () => ({
-  MCPClient: vi.fn(() => ({
-    createSessionTask: vi.fn(),
-    updateSessionTask: vi.fn(),
-    listSessionTasks: vi.fn(),
-    storeMemory: vi.fn(),
-    searchMemory: vi.fn(),
-    getMemoryDetail: vi.fn(),
-    getTask: vi.fn(),
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  })),
-}))
+import fs from "fs"
+import path from "path"
+import os from "os"
 
 describe("Sprint 03 — Planning & Approval", () => {
   let engine: IterationEngine
   let stateManager: StateManager
-  let mcpClient: MCPClient
   let presenter: Presenter
   let testDir: string
 
   beforeEach(async () => {
-    testDir = "/tmp/autopilot-test"
-    mcpClient = new MCPClient()
+    testDir = path.join(os.tmpdir(), `autopilot-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+    await fs.promises.mkdir(testDir, { recursive: true })
     stateManager = new StateManager(
-      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 }, modelMapping: {} },
-      mcpClient
+      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 } },
+      testDir,
     )
-    engine = new IterationEngine(stateManager, new MockProvider())
+    engine = new IterationEngine(stateManager)
     presenter = new Presenter({ colors: false, compact: true })
   })
 
@@ -117,18 +103,19 @@ describe("Sprint 03 — Planning & Approval", () => {
       expect(result.phase).toBe(IterationPhase.AwaitingApproval)
     })
 
-    it("should store rejection feedback in MCP", async () => {
+    it("should store rejection feedback as context", async () => {
+      const storeSpy = vi.spyOn(stateManager, "storeIterationContext")
       const { session } = await createAndStart(testDir)
       await engine.transition(IterationPhase.Planning, {
         feedback: "Need better error handling",
       })
-      // MCP storeMemory should have been called at least once with rejection data
-      const storeCalls = mcpClient.storeMemory!.mock.calls
-      // Find a call that includes rejection data
-      const rejectionCalls = storeCalls.filter((call: any[]) =>
-        call[1]?.includes?.("rejection") || call[1]?.includes?.("Need better error handling")
+
+      // storeIterationContext should have been called at least once with rejection data
+      const rejectionCalls = storeSpy.mock.calls.filter((call: any[]) =>
+        call[1]?.type === "rejection" || call[1]?.feedback?.includes?.("Need better error handling")
       )
       expect(rejectionCalls.length).toBeGreaterThan(0)
+      storeSpy.mockRestore()
     })
   })
 
@@ -189,12 +176,11 @@ describe("Sprint 03 — Planning & Approval", () => {
       const { session } = await createAndStart(testDir)
       // Reject 3 times
       for (let i = 0; i < 3; i++) {
-        // transition(Planning, { feedback }) auto-executes planning → AwaitingApproval
         const result = await engine.transition(IterationPhase.Planning, {
           feedback: `Attempt ${i + 1}`,
         })
         expect(result.phase).toBe(IterationPhase.AwaitingApproval)
-        // startIteration to kick off another planning cycle (allowed from AwaitingApproval)
+        // Start iteration again to kick off another planning cycle (allowed from AwaitingApproval)
         await engine.startIteration(session.id)
       }
       // 4th rejection should fail
@@ -206,7 +192,6 @@ describe("Sprint 03 — Planning & Approval", () => {
     it("should allow configurable max rejection limit", async () => {
       const customEngine = new IterationEngine(
         stateManager,
-        new MockProvider(),
         { maxRetries: 3, maxRejections: 1 }
       )
       const { session } = await stateManager.createSession("test2", testDir)

@@ -27,7 +27,7 @@ export interface Session {
 
 export interface CreateSessionResult {
   session: Session
-  mcpTaskCode: string
+  mcpTaskCode?: string
 }
 
 export interface IterationContext {
@@ -61,7 +61,6 @@ export interface AutopilotConfig {
   maxRetries: number
   baseDelay: number
   autoCommit: AutoCommitConfig
-  modelMapping: Record<string, string>
 }
 
 /** Type for allowed state transitions */

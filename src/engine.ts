@@ -1,7 +1,7 @@
 import { FSM } from "./fsm.js"
 import { IterationPhase, type FsmEvent, type AutoCommitConfig } from "./types.js"
 import { StateManager } from "./state.js"
-import { type AiProvider, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
+import { PHASE_PROMPTS } from "./provider.js"
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 import { parseCodeGenOutput, writeFiles } from "./codegen.js"
 import type { DiffResult } from "./diff.js"
@@ -10,7 +10,6 @@ import { Git } from "./git.js"
 import { Presenter } from "./presenter.js"
 import { retryWithBackoff } from "./backoff.js"
 import { calculateConfidence, shouldAutoCommit } from "./auto-commit.js"
-import { ModelRouter } from "./model-routing.js"
 import fs from "fs"
 import { SafetyChecker } from "./safety.js"
 
@@ -19,7 +18,6 @@ export interface EngineConfig {
   maxRejections?: number
   model?: string
   autoCommit?: AutoCommitConfig
-  modelRouter?: ModelRouter
 }
 
 export interface RejectionRecord {
@@ -37,7 +35,6 @@ export interface TransitionResult {
 export class IterationEngine {
   private fsm: FSM
   private stateManager: StateManager
-  private provider: AiProvider
   private config: EngineConfig
   private currentSessionId: string | null = null
   private retryCount: number = 0
@@ -47,12 +44,10 @@ export class IterationEngine {
 
   constructor(
     stateManager: StateManager,
-    provider: AiProvider,
     config: EngineConfig = { maxRetries: 3, maxRejections: 3 }
   ) {
     this.fsm = new FSM()
     this.stateManager = stateManager
-    this.provider = provider
     this.config = { maxRejections: 3, ...config }
     this.gateRunner = new GateRunner()
     this.gateRunner.registerDefaultGates()
@@ -126,7 +121,7 @@ export class IterationEngine {
         rejectionData.history.push(record)
         this.rejectionCounts.set(this.currentSessionId, rejectionData)
 
-        // Persist rejection feedback in MCP
+        // Persist rejection feedback
         await this.stateManager.storeIterationContext(this.currentSessionId, {
           type: "rejection",
           feedback: metadata.feedback,
@@ -170,14 +165,15 @@ export class IterationEngine {
       return this.buildResult(phase)
     }
 
-    // Execute AI provider call for this phase
+    // Use phase prompt as output instead of calling an external provider.
+    // The calling tool handler (in index.ts) presents this for the user/model to act on.
     const prompt = PHASE_PROMPTS[phase]
     if (prompt) {
       const session = this.currentSessionId
         ? await this.stateManager.getSession(this.currentSessionId)
         : null
 
-      // Build system prompt with accumulated rejection feedback if available
+      // Build enhanced prompt with accumulated rejection feedback if available
       const rejectionData = this.currentSessionId
         ? this.rejectionCounts.get(this.currentSessionId)
         : undefined
@@ -194,67 +190,19 @@ export class IterationEngine {
           feedbackSection
       }
 
-      // Multi-model routing: select provider and model for this phase
-      let activeProvider = this.provider
-      let activeModel: string | undefined
+      output = enhancedPrompt
 
-      if (this.config.modelRouter) {
-        const model = this.config.modelRouter.getModelForPhase(phase)
-        if (model !== "default") {
-          const routedProvider = this.config.modelRouter.tryGetProvider(phase)
-          if (routedProvider) {
-            activeProvider = routedProvider
-            activeModel = model
-          }
-        }
-      }
-
-      const request: ProviderRequest = {
-        phase,
-        systemPrompt: enhancedPrompt,
-        userPrompt: session?.featureDescription || "Execute current phase",
-        context: { sessionId: this.currentSessionId || "" },
-        metadata: activeModel
-          ? {
-              model: activeModel,
-              providerType: this.config.modelRouter?.getProviderTypeForPhase(phase),
-            }
-          : undefined,
-      }
-
-      try {
-        const response = await retryWithBackoff(
-          () => activeProvider.send(request),
-          {
-            maxRetries: this.config.maxRetries,
-            baseDelayMs: 1000,
-            maxDelayMs: 30000,
-            onRetry: (error, attempt, delay) => {
-              console.warn(
-                `[engine] Provider call failed (attempt ${attempt}/${this.config.maxRetries}), retrying in ${delay}ms: ${error.message}`
-              )
-            },
-          }
-        )
-        output = response.content
-
-        // Store the output in MCP memory
-        if (this.currentSessionId) {
-          await this.stateManager.storeIterationContext(this.currentSessionId, {
-            phase,
-            output,
-            model: response.model,
-            usage: response.usage,
-          })
-        }
-      } catch (error: unknown) {
-        const err = error instanceof Error ? error : new Error(String(error))
-        await this.handleError(err)
-        return this.buildResult(IterationPhase.Error, `Provider error: ${err.message}`)
+      // Store the output as iteration context
+      if (this.currentSessionId) {
+        await this.stateManager.storeIterationContext(this.currentSessionId, {
+          phase,
+          output,
+          featureDescription: session?.featureDescription || "",
+        })
       }
     }
 
-    // After successful provider response for Planning phase — parse, store, auto-transition
+    // After Planning phase output — parse, store, auto-transition to AwaitingApproval
     if (phase === IterationPhase.Planning && output) {
       const parsed = parsePlan(output)
       await this.stateManager.storeIterationContext(this.currentSessionId!, {
@@ -278,7 +226,7 @@ export class IterationEngine {
       const projectDir = testSession?.projectPath || "."
       const gateResult = await this.gateRunner.runAll(projectDir)
 
-      // Store gate results in MCP memory
+      // Store gate results
       const presenter = new Presenter({ colors: false, compact: true })
       const formattedOutput = presenter.presentGateResults(gateResult.results, gateResult.allPassed)
 
@@ -298,7 +246,6 @@ export class IterationEngine {
         const autoCommitCfg = this.config.autoCommit
 
         if (autoCommitCfg?.enabled && shouldAutoCommit(confidence, autoCommitCfg.confidenceThreshold)) {
-          // Auto-commit: confidence meets threshold, go directly to Committing
           await this.stateManager.storeIterationContext(this.currentSessionId!, {
             phase: IterationPhase.Testing,
             confidenceScore: confidence,
@@ -306,7 +253,6 @@ export class IterationEngine {
             allPassed: true,
           })
         } else if (autoCommitCfg?.enabled) {
-          // Auto-commit enabled but confidence below threshold — surface score, still commit
           await this.stateManager.storeIterationContext(this.currentSessionId!, {
             phase: IterationPhase.Testing,
             confidenceScore: confidence,
@@ -314,14 +260,11 @@ export class IterationEngine {
             message: `Auto-commit confidence (${confidence.overall}%) below threshold (${autoCommitCfg.confidenceThreshold}%)`,
           })
         }
-        // In all cases when gates pass, proceed to Committing.
-        // When auto-commit is enabled and confidence is low, the confidence
-        // score is surfaced via the stored context for user visibility.
+        // Proceed to Committing
         this.fsm.transitionTo(IterationPhase.Committing)
         await this.stateManager.updateSession(this.currentSessionId!, {
           currentPhase: IterationPhase.Committing,
         })
-        // Fall through to Committing handler below instead of returning early (FIX-1)
         phase = IterationPhase.Committing
       } else {
         // Tests failed — regenerate code
@@ -334,11 +277,11 @@ export class IterationEngine {
       }
     }
 
-    // After successful provider response for Generating phase — parse codegen output and write files
+    // After Generating phase output — parse codegen output and write files
     if (phase === IterationPhase.Generating && output) {
       const parsed = parseCodeGenOutput(output)
 
-      // Get session for project path (session from prompt block above is not in scope)
+      // Get session for project path
       const genSession = this.currentSessionId
         ? await this.stateManager.getSession(this.currentSessionId)
         : null
@@ -377,7 +320,7 @@ export class IterationEngine {
         return this.buildResult(IterationPhase.Error, "No active session for commit")
       }
 
-      // Safety check: scan project files for dangerous patterns before git add (FIX-3)
+      // Safety check: scan project files for dangerous patterns before git add
       const safetyChecker = new SafetyChecker({
         allowedDirs: [""],
         protectedFiles: [

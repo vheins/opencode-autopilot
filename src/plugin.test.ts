@@ -1,19 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 
-// Shared mock instances that tests can manipulate
-const mockMCPInstance = {
-  connect: vi.fn().mockResolvedValue(undefined),
-  call: vi.fn().mockResolvedValue(undefined),
-  disconnect: vi.fn().mockResolvedValue(undefined),
-  createSessionTask: vi.fn().mockResolvedValue({}),
-  updateSessionTask: vi.fn().mockResolvedValue({}),
-  listSessionTasks: vi.fn().mockResolvedValue([]),
-  storeMemory: vi.fn().mockResolvedValue({}),
-  searchMemory: vi.fn().mockResolvedValue([]),
-  getMemoryDetail: vi.fn().mockResolvedValue({}),
-  getTask: vi.fn().mockResolvedValue({}),
-}
-
+// Mock the StateManager for plugin-level tests
 const mockStateInstance = {
   createSession: vi.fn(),
   getSession: vi.fn(),
@@ -30,10 +17,6 @@ const mockStateInstance = {
   getConfig: vi.fn(),
   storeIterationContext: vi.fn(),
 }
-
-vi.mock("./mcp-client.js", () => ({
-  MCPClient: vi.fn(() => mockMCPInstance),
-}))
 
 vi.mock("./state.js", () => ({
   StateManager: vi.fn(() => mockStateInstance),
@@ -58,14 +41,6 @@ vi.mock("fs", () => ({
 }))
 
 import { autopilot } from "./index.js"
-
-/**
- * Because the module-level singleton state (stateManager/engine) persists
- * across tests, we test "not initialized" behavior by running those tests
- * FIRST (they cannot call config). Subsequent tests can safely call config
- * to set up initialized state. We rely on vi.clearAllMocks() in beforeEach
- * to reset mock call counters but NOT the module variables themselves.
- */
 
 describe("autopilot plugin", () => {
   beforeEach(() => {
@@ -105,12 +80,11 @@ describe("autopilot plugin", () => {
   })
 
   describe("config initialization", () => {
-    it("should connect MCP and load state on config", async () => {
+    it("should load state on config", async () => {
       mockStateInstance.loadState.mockResolvedValue(0)
       const plugin = await autopilot({ project: "test", directory: "/tmp", worktree: "/tmp" })
       await plugin.config({})
 
-      expect(mockMCPInstance.connect).toHaveBeenCalledWith("npx", ["-y", "@vheins/local-memory-mcp"])
       expect(mockStateInstance.loadState).toHaveBeenCalled()
     })
 
@@ -163,7 +137,6 @@ describe("autopilot plugin", () => {
         ],
       } as any)
 
-      expect(mockMCPInstance.connect).toHaveBeenCalled()
       expect(mockStateInstance.loadState).toHaveBeenCalled()
     })
   })
@@ -205,7 +178,6 @@ describe("autopilot plugin", () => {
           lastActivity: new Date().toISOString(),
           iterationCount: 0,
         },
-        mcpTaskCode: "AUTOPILOT-SESSION-123",
       })
       mockStateInstance.getSession.mockResolvedValue({
         id: "new-session-id",
@@ -343,7 +315,6 @@ describe("autopilot plugin", () => {
           lastActivity: new Date().toISOString(),
           iterationCount: 0,
         },
-        mcpTaskCode: "AUTOPILOT-SESSION-1",
       })
       mockStateInstance.getSession.mockResolvedValue({
         id: "approve-session-id",
@@ -387,7 +358,6 @@ describe("autopilot plugin", () => {
           lastActivity: new Date().toISOString(),
           iterationCount: 0,
         },
-        mcpTaskCode: "AUTOPILOT-SESSION-2",
       })
       mockStateInstance.getSession.mockResolvedValue({
         id: "reject-session-id",
@@ -482,11 +452,9 @@ describe("autopilot plugin", () => {
   })
 
   describe("exports", () => {
-    it("should export ProviderFactory and MockProvider", async () => {
+    it("should export MockProvider and PHASE_PROMPTS", async () => {
       const mod = await import("./index.js")
-      expect(mod.ProviderFactory).toBeDefined()
       expect(mod.MockProvider).toBeDefined()
-      expect(mod.OpencodeProvider).toBeDefined()
       expect(mod.PHASE_PROMPTS).toBeDefined()
     })
 

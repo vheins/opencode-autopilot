@@ -95,78 +95,6 @@ Provide a detailed review with actionable feedback.`,
   [IterationPhase.Error]: "",
 }
 
-/**
- * Infer the provider type from a model name.
- *
- * - "claude" → "anthropic"
- * - "gpt", "o1", "o3" → "openai"
- * - "opencode" → "opencode"
- * - everything else → "mock"
- */
-export function determineProviderType(model: string): ProviderConfig["type"] {
-  const lower = model.toLowerCase()
-  if (lower.includes("claude")) return "anthropic"
-  if (lower.includes("gpt") || lower.includes("o1") || lower.includes("o3")) return "openai"
-  if (lower.includes("opencode")) return "opencode"
-  return "mock"
-}
-
-/** Provider Factory */
-export class ProviderFactory {
-  private providers: Map<string, AiProvider> = new Map()
-
-  registerProvider(name: string, provider: AiProvider): void {
-    this.providers.set(name, provider)
-  }
-
-  getProvider(name: string): AiProvider {
-    const provider = this.providers.get(name)
-    if (!provider) throw new Error(`Provider "${name}" not registered`)
-    return provider
-  }
-
-  getAvailableProviders(): string[] {
-    return Array.from(this.providers.keys()).filter(name => 
-      this.providers.get(name)!.isAvailable()
-    )
-  }
-
-  /** Create a provider from config */
-  createProvider(config: ProviderConfig): AiProvider {
-    switch (config.type) {
-      case "mock":
-        return new MockProvider({ model: config.model })
-      case "opencode":
-        return new OpencodeProvider({ model: config.model })
-      case "anthropic":
-      case "openai":
-        console.warn(`[provider] Direct ${config.type} integration not yet implemented, falling back to mock`)
-        return new MockProvider({ model: config.model })
-      default:
-        return new MockProvider({ model: config.model })
-    }
-  }
-
-  /** Check whether a provider has been registered under the given name. */
-  hasProvider(name: string): boolean {
-    return this.providers.has(name)
-  }
-
-  /**
-   * Create and register one AiProvider instance per unique model name in the
-   * mapping, inferring the provider type from the model name.
-   */
-  registerProvidersForMapping(mapping: Record<string, string>): void {
-    const uniqueModels = new Set(Object.values(mapping))
-    for (const model of uniqueModels) {
-      if (this.hasProvider(model)) continue
-      const type = determineProviderType(model)
-      const provider = this.createProvider({ type, model })
-      this.registerProvider(model, provider)
-    }
-  }
-}
-
 /** Mock provider for testing */
 export class MockProvider implements AiProvider {
   readonly name = "mock"
@@ -279,39 +207,6 @@ describe('Auth', () => {
         outputTokens: content.length / 4,
       },
     }
-  }
-
-  isAvailable(): boolean {
-    return true
-  }
-}
-
-/** Opencode provider — delegates to opencode's built-in AI */
-export class OpencodeProvider implements AiProvider {
-  readonly name = "opencode"
-
-  constructor(private options: { model?: string; client?: any } = {}) {}
-
-  async send(request: ProviderRequest): Promise<ProviderResponse> {
-    if (this.options.client?.sendMessage) {
-      try {
-        // Use opencode client's AI capabilities
-        const response = await this.options.client.sendMessage({
-          text: `${request.systemPrompt}\n\n${request.userPrompt}`,
-          model: this.options.model,
-        })
-        return {
-          content: typeof response === 'string' ? response : response.text,
-          model: this.options.model || "opencode",
-          usage: response.usage,
-        }
-      } catch (e) {
-        console.warn("[opencode-provider] Falling back to mock:", e)
-      }
-    }
-    // Fallback to mock
-    const mock = new MockProvider()
-    return mock.send(request)
   }
 
   isAvailable(): boolean {
