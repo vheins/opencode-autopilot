@@ -1,6 +1,7 @@
 import type { Session, CreateSessionResult, AutopilotConfig, SessionStatus } from "./types.js"
 import { IterationPhase } from "./types.js"
 import { MCPClient } from "./mcp-client.js"
+import { retryWithBackoff } from "./backoff.js"
 
 export class StateManager {
   private mcp: MCPClient
@@ -47,16 +48,23 @@ export class StateManager {
 
     // Attempt MCP persistence with graceful fallback
     try {
-      await this.mcp.createSessionTask(description.trim(), projectPath, taskCode, "active")
+      await retryWithBackoff(
+        () => this.mcp.createSessionTask(description.trim(), projectPath, taskCode, "active"),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
+      )
     } catch (err) {
       console.warn(`[StateManager] MCP task-create failed, falling back to local cache: ${(err as Error).message}`)
     }
 
     try {
-      await this.mcp.storeMemory(
-        `Session: ${description.trim()}`,
-        JSON.stringify(session, null, 2),
-        ["autopilot-session"]
+      await retryWithBackoff(
+        () =>
+          this.mcp.storeMemory(
+            `Session: ${description.trim()}`,
+            JSON.stringify(session, null, 2),
+            ["autopilot-session"]
+          ),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
       )
     } catch (err) {
       console.warn(`[StateManager] MCP memory-store failed, session still cached locally: ${(err as Error).message}`)
@@ -88,10 +96,14 @@ export class StateManager {
 
     // Sync to MCP as memory snapshot
     try {
-      await this.mcp.storeMemory(
-        `Session Update: ${updated.featureDescription}`,
-        JSON.stringify(updated, null, 2),
-        ["autopilot-session"]
+      await retryWithBackoff(
+        () =>
+          this.mcp.storeMemory(
+            `Session Update: ${updated.featureDescription}`,
+            JSON.stringify(updated, null, 2),
+            ["autopilot-session"]
+          ),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 }
       )
     } catch (err) {
       console.warn(`[StateManager] MCP memory-store failed during update, local cache intact: ${(err as Error).message}`)

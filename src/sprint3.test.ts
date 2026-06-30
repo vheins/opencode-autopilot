@@ -24,16 +24,26 @@ vi.mock("./mcp-client.js", () => ({
 describe("Sprint 03 — Planning & Approval", () => {
   let engine: IterationEngine
   let stateManager: StateManager
+  let mcpClient: MCPClient
   let presenter: Presenter
+  let testDir: string
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    testDir = "/tmp/autopilot-test"
+    mcpClient = new MCPClient()
     stateManager = new StateManager(
-      { maxRetries: 3, baseDelay: 1000, autoCommit: false, confidenceThreshold: 70, modelMapping: {} },
-      new MCPClient()
+      { maxRetries: 3, baseDelay: 1000, autoCommit: { enabled: false, confidenceThreshold: 80 }, modelMapping: {} },
+      mcpClient
     )
     engine = new IterationEngine(stateManager, new MockProvider())
     presenter = new Presenter({ colors: false, compact: true })
   })
+
+  async function createAndStart(projectDir: string, desc = "test") {
+    const { session } = await stateManager.createSession(desc, projectDir)
+    const result = await engine.startIteration(session.id)
+    return { session, result }
+  }
 
   describe("Plan Parsing", () => {
     it("should parse structured plan output", () => {
@@ -68,15 +78,13 @@ describe("Sprint 03 — Planning & Approval", () => {
 
   describe("Approval Flow", () => {
     it("should transition to AwaitingApproval after planning", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      const result = await engine.startIteration(session.id)
+      const { session, result } = await createAndStart(testDir)
       // Engine auto-transitions after planning
-      expect([IterationPhase.AwaitingApproval, IterationPhase.Planning]).toContain(result.phase)
+      expect(result.phase).toBe(IterationPhase.AwaitingApproval)
     })
 
     it("should proceed to Generating on approval then auto-transition to AwaitingApproval for diff review", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       const result = await engine.transition(IterationPhase.Generating, { approved: true })
       // After generating code, engine auto-transitions to AwaitingApproval for diff review
       expect(result.phase).toBe(IterationPhase.AwaitingApproval)
@@ -84,16 +92,14 @@ describe("Sprint 03 — Planning & Approval", () => {
     })
 
     it("should reject without approved flag", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       await expect(
         engine.transition(IterationPhase.Generating, { approved: false })
       ).rejects.toThrow(/approve/)
     })
 
     it("should reject with no metadata at all", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       await expect(
         engine.transition(IterationPhase.Generating, {})
       ).rejects.toThrow(/approve/)
@@ -102,8 +108,7 @@ describe("Sprint 03 — Planning & Approval", () => {
 
   describe("Rejection Flow", () => {
     it("should accept rejection with feedback and auto-replan", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       // Rejection transitions to Planning, auto-executes, ends at AwaitingApproval
       const result = await engine.transition(IterationPhase.Planning, {
         feedback: "Add more details",
@@ -113,14 +118,12 @@ describe("Sprint 03 — Planning & Approval", () => {
     })
 
     it("should store rejection feedback in MCP", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       await engine.transition(IterationPhase.Planning, {
         feedback: "Need better error handling",
       })
       // MCP storeMemory should have been called at least once with rejection data
-      const mockMcp = (stateManager as any).mcp as any
-      const storeCalls = mockMcp.storeMemory.mock.calls
+      const storeCalls = mcpClient.storeMemory!.mock.calls
       // Find a call that includes rejection data
       const rejectionCalls = storeCalls.filter((call: any[]) =>
         call[1]?.includes?.("rejection") || call[1]?.includes?.("Need better error handling")
@@ -141,7 +144,7 @@ describe("Sprint 03 — Planning & Approval", () => {
 
     it("should format status messages", () => {
       const output = presenter.presentStatus(IterationPhase.Planning)
-      expect(output.length).toBeGreaterThan(0)
+      expect(output).toContain("Planning")
     })
 
     it("should include timestamp in plan display", () => {
@@ -183,8 +186,7 @@ describe("Sprint 03 — Planning & Approval", () => {
 
   describe("Rejection limits", () => {
     it("should enforce max rejection limit", async () => {
-      const { session } = await stateManager.createSession("test", "/test")
-      await engine.startIteration(session.id)
+      const { session } = await createAndStart(testDir)
       // Reject 3 times
       for (let i = 0; i < 3; i++) {
         // transition(Planning, { feedback }) auto-executes planning → AwaitingApproval
@@ -207,7 +209,7 @@ describe("Sprint 03 — Planning & Approval", () => {
         new MockProvider(),
         { maxRetries: 3, maxRejections: 1 }
       )
-      const { session } = await stateManager.createSession("test2", "/test")
+      const { session } = await stateManager.createSession("test2", testDir)
       await customEngine.startIteration(session.id)
       // First rejection should work
       const result = await customEngine.transition(IterationPhase.Planning, {
