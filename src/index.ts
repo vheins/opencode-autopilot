@@ -6,6 +6,18 @@ import { MCPClient } from "./mcp-client.js"
 import { IterationPhase } from "./types.js"
 import type { AutopilotConfig } from "./types.js"
 
+import { ProviderFactory, type ProviderConfig } from "./provider.js"
+
+// Re-export provider types for plugin consumers
+export type {
+  ProviderRequest,
+  ProviderResponse,
+  AiProvider,
+  ProviderConfig,
+} from "./provider.js"
+export { ProviderFactory, MockProvider, OpencodeProvider, PHASE_PROMPTS } from "./provider.js"
+import { IterationEngine } from "./engine.js"
+
 const DEFAULT_CONFIG: AutopilotConfig = {
   maxRetries: 3,
   baseDelay: 1000,
@@ -16,6 +28,7 @@ const DEFAULT_CONFIG: AutopilotConfig = {
 
 let stateManager: StateManager | null = null
 let mcpClient: MCPClient | null = null
+let engine: IterationEngine | null = null
 
 export const autopilot: Plugin = async ({ project, directory, worktree }) => {
   mcpClient = new MCPClient()
@@ -31,6 +44,9 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
       if (!mcpClient) throw new Error("MCP client not created")
       await mcpClient.connect("npx", ["-y", "@vheins/local-memory-mcp"])
       stateManager = new StateManager(config, mcpClient)
+      const providerFactory = new ProviderFactory()
+      const provider = providerFactory.createProvider({ type: "mock" })
+      engine = new IterationEngine(stateManager, provider, { maxRetries: config.maxRetries })
 
       // State recovery on startup — restore sessions from MCP memory
       try {
@@ -96,9 +112,21 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
             description,
             context.directory,
           )
-          await stateManager.updateSession(result.session.id, {
-            currentPhase: IterationPhase.Planning,
-          })
+
+          // Start iteration engine
+          if (engine) {
+            const engineState = await engine.startIteration(result.session.id)
+            return {
+              output: JSON.stringify({
+                sessionId: result.session.id,
+                status: "planning",
+                phase: engineState.phase,
+                transitions: engineState.transitions,
+                message: `AUTOPILOT session started for: ${description}`,
+              }),
+            }
+          }
+
           return {
             output: JSON.stringify({
               sessionId: result.session.id,
@@ -119,6 +147,12 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
         execute: async ({ sessionId }) => {
           if (!stateManager) throw new Error("AUTOPILOT not initialized")
           const result = await stateManager.resumeSession(sessionId)
+
+          // Resume engine state
+          if (engine) {
+            await engine.resume(result.session.id, result.session.currentPhase)
+          }
+
           return {
             output: JSON.stringify({
               sessionId: result.session.id,
@@ -148,11 +182,12 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
           if (!stateManager) throw new Error("AUTOPILOT not initialized")
           if (sessionId) {
             const session = await stateManager.getSession(sessionId)
+            const engineState = engine?.getState() ?? null
             return {
               output: JSON.stringify(
                 session
-                  ? { session }
-                  : { error: "Session not found", sessionId },
+                  ? { session, engine: engineState }
+                  : { error: "Session not found", sessionId, engine: engineState },
               ),
             }
           }

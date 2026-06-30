@@ -59,3 +59,60 @@ export interface AutopilotConfig {
   confidenceThreshold: number
   modelMapping: Record<string, string>
 }
+
+/** Type for allowed state transitions */
+export type FsmTransition = {
+  from: IterationPhase
+  to: IterationPhase
+  guard?: string  // description of guard condition
+}
+
+/** FSM configuration — defines all allowed transitions */
+export const FSM_TRANSITIONS: FsmTransition[] = [
+  { from: IterationPhase.Idle, to: IterationPhase.Planning },
+  { from: IterationPhase.Idle, to: IterationPhase.Error },
+  { from: IterationPhase.Planning, to: IterationPhase.AwaitingApproval },
+  { from: IterationPhase.Planning, to: IterationPhase.Error },
+  { from: IterationPhase.AwaitingApproval, to: IterationPhase.Generating, guard: "User approved plan" },
+  { from: IterationPhase.AwaitingApproval, to: IterationPhase.Planning, guard: "User rejected plan with feedback" },
+  { from: IterationPhase.AwaitingApproval, to: IterationPhase.Idle, guard: "User cancelled" },
+  { from: IterationPhase.Generating, to: IterationPhase.Reviewing },
+  { from: IterationPhase.Generating, to: IterationPhase.Error },
+  { from: IterationPhase.Reviewing, to: IterationPhase.Testing },
+  { from: IterationPhase.Reviewing, to: IterationPhase.Planning, guard: "Review failed, regenerate plan" },
+  { from: IterationPhase.Reviewing, to: IterationPhase.Error },
+  { from: IterationPhase.Testing, to: IterationPhase.Committing },
+  { from: IterationPhase.Testing, to: IterationPhase.Generating, guard: "Tests failed, regenerate code" },
+  { from: IterationPhase.Testing, to: IterationPhase.Error },
+  { from: IterationPhase.Committing, to: IterationPhase.Done },
+  { from: IterationPhase.Committing, to: IterationPhase.Error },
+  { from: IterationPhase.Error, to: IterationPhase.Idle, guard: "Error recovered" },
+  { from: IterationPhase.Error, to: IterationPhase.Planning, guard: "Error during planning" },
+  { from: IterationPhase.Done, to: IterationPhase.Idle },
+]
+
+/** FSM engine interface */
+export interface FiniteStateMachine {
+  currentPhase: IterationPhase
+  allowedTransitions(): IterationPhase[]
+  canTransitionTo(target: IterationPhase): boolean
+  transitionTo(target: IterationPhase): IterationPhase
+  getGuardCondition(target: IterationPhase): string | undefined
+}
+
+/** FSM event log entry */
+export interface FsmEvent {
+  timestamp: string
+  from: IterationPhase
+  to: IterationPhase
+  guard?: string
+  success: boolean
+  error?: string
+}
+
+/** FSM history for a session */
+export interface FsmHistory {
+  sessionId: string
+  events: FsmEvent[]
+  currentPhase: IterationPhase
+}

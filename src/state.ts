@@ -7,6 +7,14 @@ export class StateManager {
   private config: AutopilotConfig
   private localCache = new Map<string, Session>()
 
+  async storeIterationContext(sessionId: string, context: Record<string, any>): Promise<void> {
+    await this.mcp.storeMemory(
+      `Iteration: ${sessionId}`,
+      JSON.stringify({ sessionId, ...context, timestamp: new Date().toISOString() }),
+      ["autopilot-iteration", `session-${sessionId}`]
+    )
+  }
+
   constructor(config: AutopilotConfig, mcpClient: MCPClient) {
     this.config = config
     this.mcp = mcpClient
