@@ -74,11 +74,13 @@ describe("Sprint 03 — Planning & Approval", () => {
       expect([IterationPhase.AwaitingApproval, IterationPhase.Planning]).toContain(result.phase)
     })
 
-    it("should proceed to Generating on approval", async () => {
+    it("should proceed to Generating on approval then auto-transition to AwaitingApproval for diff review", async () => {
       const { session } = await stateManager.createSession("test", "/test")
       await engine.startIteration(session.id)
       const result = await engine.transition(IterationPhase.Generating, { approved: true })
-      expect(result.phase).toBe(IterationPhase.Generating)
+      // After generating code, engine auto-transitions to AwaitingApproval for diff review
+      expect(result.phase).toBe(IterationPhase.AwaitingApproval)
+      expect(result.transitions).toContain(IterationPhase.Reviewing)
     })
 
     it("should reject without approved flag", async () => {

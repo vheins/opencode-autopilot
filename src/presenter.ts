@@ -1,4 +1,5 @@
 import type { ParsedPlan } from "./plan-parser.js"
+import type { DiffResult } from "./diff.js"
 import { IterationPhase } from "./types.js"
 
 export interface PresentationOptions {
@@ -54,6 +55,30 @@ export class Presenter {
     lines.push("")
     lines.push("─".repeat(60))
     lines.push("  Approve? (Y/n): ")
+    return lines.join("\n")
+  }
+
+  /** Present a diff summary for user review */
+  presentDiff(diff: DiffResult): string {
+    const lines: string[] = []
+    lines.push("")
+    lines.push("═".repeat(60))
+    lines.push("  AUTOPILOT — Code Changes")
+    lines.push("═".repeat(60))
+    lines.push("")
+    lines.push(`  ${diff.files.length} file(s) changed`)
+    lines.push(`  +${diff.totalInsertions} / -${diff.totalDeletions} lines`)
+    lines.push("")
+
+    for (const file of diff.files) {
+      const icon = file.type === "added" ? "＋" : file.type === "deleted" ? "−" : "✎"
+      lines.push(`  ${icon} ${file.filePath}`)
+      lines.push(`     +${file.insertions}  -${file.deletions}`)
+      lines.push("")
+    }
+
+    lines.push("─".repeat(60))
+    lines.push("  Review changes above. Type 'approve' to commit or 'reject <reason>' to regenerate.")
     return lines.join("\n")
   }
 

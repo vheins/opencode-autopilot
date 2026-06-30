@@ -21,6 +21,22 @@ export { ProviderFactory, MockProvider, OpencodeProvider, PHASE_PROMPTS } from "
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 export type { PlanFile, PlanStep, ParsedPlan } from "./plan-parser.js"
 export { parsePlan, formatPlanForDisplay }
+import { parseCodeGenOutput, writeFiles } from "./codegen.js"
+export type { FileChange, CodeGenResult } from "./codegen.js"
+export { parseCodeGenOutput, writeFiles }
+import { generateDiff, formatDiff } from "./diff.js"
+export type { DiffEntry, DiffHunk, DiffResult } from "./diff.js"
+export { generateDiff, formatDiff }
+import {
+  SafetyChecker,
+  defaultSafetyChecker,
+  type SafetyRule,
+  type SafetyCheckResult,
+  type SafetyConfig,
+  type SafetyAction,
+} from "./safety.js"
+export type { SafetyRule, SafetyCheckResult, SafetyConfig, SafetyAction }
+export { SafetyChecker, defaultSafetyChecker }
 import { IterationEngine } from "./engine.js"
 import { Presenter } from "./presenter.js"
 
@@ -204,11 +220,18 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
             const display = engineState
               ? presenter.presentStatus(engineState.phase)
               : presenter.presentStatus(IterationPhase.Idle, "No active engine")
+
+            // Include diff presentation when awaiting approval with pending changes
+            let diffDisplay: string | undefined
+            if (engineState?.phase === IterationPhase.AwaitingApproval && engine?.getPendingDiff()) {
+              diffDisplay = presenter.presentDiff(engine.getPendingDiff()!)
+            }
+
             return {
               output: JSON.stringify(
                 session
-                  ? { session, engine: engineState, display }
-                  : { error: "Session not found", sessionId, engine: engineState, display },
+                  ? { session, engine: engineState, display, diff: diffDisplay }
+                  : { error: "Session not found", sessionId, engine: engineState, display, diff: diffDisplay },
               ),
             }
           }
@@ -225,22 +248,56 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
         },
       }),
 
-      autopilot_approve: tool({
+      autopilot_review: tool({
         description:
-          "Approve the current iteration step and continue. Transitions from AwaitingApproval to Generating phase.",
+          "Review the diff after code generation. Shows file changes, line statistics, " +
+          "and prompts for approval or rejection.",
         args: {},
         execute: async () => {
           if (!engine) throw new Error("AUTOPILOT not initialized")
-          const result = await engine.transition(IterationPhase.Generating, { approved: true })
+          const diff = engine.getPendingDiff()
+          if (!diff) {
+            return {
+              output: JSON.stringify({
+                message: "No pending diff to review. Code generation may not have completed yet.",
+              }),
+            }
+          }
           return {
-            output: JSON.stringify({ phase: result.phase, output: result.output }),
+            output: presenter.presentDiff(diff),
+          }
+        },
+      }),
+
+      autopilot_approve: tool({
+        description:
+          "Approve the current iteration step and continue. Transitions from AwaitingApproval to Generating phase " +
+          "(plan approval) or Reviewing phase (diff approval).",
+        args: {},
+        execute: async () => {
+          if (!engine) throw new Error("AUTOPILOT not initialized")
+          const state = engine.getState()
+          // If there's a pending diff, this is a diff review approval — go to Reviewing
+          const target = state.hasPendingDiff
+            ? IterationPhase.Reviewing
+            : IterationPhase.Generating
+          const result = await engine.transition(target, { approved: true })
+          return {
+            output: JSON.stringify({
+              phase: result.phase,
+              output: result.output,
+              message: state.hasPendingDiff
+                ? "Changes approved. Proceeding to review..."
+                : "Plan approved. Proceeding to code generation...",
+            }),
           }
         },
       }),
 
       autopilot_reject: tool({
         description:
-          "Reject the current step with feedback for regeneration. Transitions back to Planning phase.",
+          "Reject the current step with feedback for regeneration. Transitions back to Planning phase " +
+          "(plan rejection) or Generating phase (diff rejection).",
         args: {
           feedback: z
             .string()
@@ -249,9 +306,19 @@ export const autopilot: Plugin = async ({ project, directory, worktree }) => {
         },
         execute: async ({ feedback }: { feedback: string }) => {
           if (!engine) throw new Error("AUTOPILOT not initialized")
-          const result = await engine.transition(IterationPhase.Planning, { feedback })
+          const state = engine.getState()
+          // If there's a pending diff, this is a diff rejection — go to Generating to regenerate code
+          const target = state.hasPendingDiff
+            ? IterationPhase.Generating
+            : IterationPhase.Planning
+          const result = await engine.transition(target, { feedback })
           return {
-            output: JSON.stringify({ phase: result.phase, message: "Plan rejected. Regenerating with feedback..." }),
+            output: JSON.stringify({
+              phase: result.phase,
+              message: state.hasPendingDiff
+                ? "Changes rejected. Regenerating code with feedback..."
+                : "Plan rejected. Regenerating with feedback...",
+            }),
           }
         },
       }),

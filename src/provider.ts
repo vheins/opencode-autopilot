@@ -60,7 +60,26 @@ One-line summary of what needs to be done.
 
 ## Effort: S|M|L|XL`,
   [IterationPhase.AwaitingApproval]: "",
-  [IterationPhase.Generating]: `You are a senior software engineer. Implement the approved plan. Write production-ready code following best practices. Return the code changes as a structured diff.`,
+  [IterationPhase.Generating]: `You are a senior software engineer. Implement the approved plan. Write production-ready code.
+
+For each file, output in this exact format:
+
+## File: path/to/file.ts
+\`\`\`language
+// Full file content here
+\`\`\`
+
+## File: path/to/newfile.ts
+\`\`\`language
+// Full file content here
+\`\`\`
+
+Follow best practices:
+- Write complete, working code (no TODOs or placeholders)
+- Include imports and type definitions
+- Handle errors appropriately
+- Add comments for complex logic
+- Follow the project's existing code style`,
   [IterationPhase.Reviewing]: `You are a senior code reviewer. Review the generated code for:
 1. Correctness and bugs
 2. Security vulnerabilities
@@ -139,12 +158,72 @@ Implement JWT authentication with token verification and middleware
 - Rate limiting on auth endpoints may impact UX
 
 ## Effort: M`,
-      [IterationPhase.Generating]: `Here are the code changes:
+      [IterationPhase.Generating]: `## File: src/auth.ts
+\`\`\`typescript
+import jwt from 'jsonwebtoken'
 
-\`\`\`diff
-+ // src/auth.ts - JWT Authentication Module
-+ import jwt from 'jsonwebtoken'
-...
+export interface TokenPayload {
+  userId: string
+  email: string
+}
+
+export function verifyToken(token: string): TokenPayload {
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET!) as TokenPayload
+  } catch (error) {
+    throw new Error('Invalid token')
+  }
+}
+
+export function generateToken(payload: TokenPayload): string {
+  return jwt.sign(payload, process.env.JWT_SECRET!, { expiresIn: '24h' })
+}
+\`\`\`
+
+## File: src/middleware.ts
+\`\`\`typescript
+import { Request, Response, NextFunction } from 'express'
+import { verifyToken, TokenPayload } from './auth.js'
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: TokenPayload
+    }
+  }
+}
+
+export function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  const token = req.headers.authorization?.replace('Bearer ', '')
+  if (!token) {
+    return res.status(401).json({ error: 'No token provided' })
+  }
+  try {
+    req.user = verifyToken(token)
+    next()
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' })
+  }
+}
+\`\`\`
+
+## File: tests/auth.test.ts
+\`\`\`typescript
+import { describe, it, expect } from 'vitest'
+import { verifyToken, generateToken } from '../src/auth.js'
+
+describe('Auth', () => {
+  it('should verify a valid token', () => {
+    const payload = { userId: '123', email: 'test@example.com' }
+    const token = generateToken(payload)
+    const result = verifyToken(token)
+    expect(result.userId).toBe('123')
+  })
+
+  it('should throw on invalid token', () => {
+    expect(() => verifyToken('invalid-token')).toThrow()
+  })
+})
 \`\`\``,
       [IterationPhase.Reviewing]: "## Code Review\n\n### ✅ Strengths\n- Code follows project conventions\n- Error handling is comprehensive\n\n### ⚠️ Issues\n1. No input validation on token parser\n2. Missing rate limiting consideration\n3. Test coverage could be improved\n\n### Overall: Changes requested",
     }

@@ -3,6 +3,8 @@ import { IterationPhase, type FsmEvent } from "./types.js"
 import { StateManager } from "./state.js"
 import { type AiProvider, ProviderFactory, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
+import { parseCodeGenOutput, writeFiles } from "./codegen.js"
+import type { DiffResult } from "./diff.js"
 
 export interface EngineConfig {
   maxRetries: number
@@ -30,6 +32,7 @@ export class IterationEngine {
   private currentSessionId: string | null = null
   private retryCount: number = 0
   private rejectionCounts = new Map<string, { count: number; history: RejectionRecord[] }>()
+  private pendingDiff: DiffResult | null = null
 
   constructor(
     stateManager: StateManager,
@@ -66,10 +69,12 @@ export class IterationEngine {
 
     // Handle approval/rejection guards
     if (this.fsm.currentPhase === IterationPhase.AwaitingApproval) {
-      if (targetPhase === IterationPhase.Generating && !metadata?.approved) {
-        throw new Error("Plan must be approved before generating")
-      }
-      if (targetPhase === IterationPhase.Planning && metadata?.feedback) {
+      if (targetPhase === IterationPhase.Generating && this.pendingDiff) {
+        // Diff rejection with feedback — regenerate code
+        if (!metadata?.feedback) {
+          throw new Error("Feedback required when rejecting changes")
+        }
+
         // Enforce max rejection limit
         const rejectionData = this.rejectionCounts.get(this.currentSessionId) ?? { count: 0, history: [] }
         if (rejectionData.count >= (this.config.maxRejections ?? 3)) {
@@ -78,7 +83,31 @@ export class IterationEngine {
           )
         }
 
-        // Increment rejection count and store feedback
+        const record: RejectionRecord = { feedback: metadata.feedback, timestamp: new Date().toISOString() }
+        rejectionData.count++
+        rejectionData.history.push(record)
+        this.rejectionCounts.set(this.currentSessionId, rejectionData)
+
+        // Persist code rejection feedback
+        await this.stateManager.storeIterationContext(this.currentSessionId, {
+          type: "code_rejection",
+          feedback: metadata.feedback,
+          rejectionCount: rejectionData.count,
+          phase: IterationPhase.AwaitingApproval,
+        })
+
+        this.retryCount++
+      } else if (targetPhase === IterationPhase.Generating && !metadata?.approved) {
+        throw new Error("Plan must be approved before generating")
+      } else if (targetPhase === IterationPhase.Planning && metadata?.feedback) {
+        // Plan rejection with feedback
+        const rejectionData = this.rejectionCounts.get(this.currentSessionId) ?? { count: 0, history: [] }
+        if (rejectionData.count >= (this.config.maxRejections ?? 3)) {
+          throw new Error(
+            `Max rejections (${this.config.maxRejections}) exceeded for session ${this.currentSessionId.slice(0, 8)}`
+          )
+        }
+
         const record: RejectionRecord = { feedback: metadata.feedback, timestamp: new Date().toISOString() }
         rejectionData.count++
         rejectionData.history.push(record)
@@ -91,6 +120,11 @@ export class IterationEngine {
           rejectionCount: rejectionData.count,
           phase: IterationPhase.AwaitingApproval,
         })
+      }
+
+      // Clear pending diff if transitioning out of AwaitingApproval (approve or reject)
+      if (this.pendingDiff && (targetPhase === IterationPhase.Reviewing || targetPhase === IterationPhase.Generating)) {
+        this.pendingDiff = null
       }
     }
 
@@ -188,6 +222,41 @@ export class IterationEngine {
       return this.buildResult(IterationPhase.AwaitingApproval, output)
     }
 
+    // After successful provider response for Generating phase — parse codegen output and write files
+    if (phase === IterationPhase.Generating && output) {
+      const parsed = parseCodeGenOutput(output)
+
+      // Get session for project path (session from prompt block above is not in scope)
+      const genSession = this.currentSessionId
+        ? await this.stateManager.getSession(this.currentSessionId)
+        : null
+
+      // Write generated files to disk with backup and diff capture
+      const writeResult = await writeFiles(
+        parsed.files,
+        genSession?.projectPath || ".",
+        { dryRun: false, createBackup: true },
+      )
+
+      await this.stateManager.storeIterationContext(this.currentSessionId!, {
+        phase: IterationPhase.Generating,
+        codeGenResult: parsed,
+        fileCount: parsed.files.length,
+        writeResult,
+      })
+
+      // Store diff for user review and transition to AwaitingApproval
+      if (writeResult.diff) {
+        this.pendingDiff = writeResult.diff
+      }
+
+      this.fsm.transitionTo(IterationPhase.AwaitingApproval)
+      await this.stateManager.updateSession(this.currentSessionId!, {
+        currentPhase: IterationPhase.AwaitingApproval,
+      })
+      return this.buildResult(IterationPhase.AwaitingApproval, output)
+    }
+
     return this.buildResult(phase, output)
   }
 
@@ -217,6 +286,7 @@ export class IterationEngine {
   async resume(sessionId: string, phase: IterationPhase): Promise<TransitionResult> {
     this.currentSessionId = sessionId
     this.fsm.reset(phase)
+    this.pendingDiff = null
     return this.buildResult(phase)
   }
 
@@ -227,6 +297,7 @@ export class IterationEngine {
       transitions: this.fsm.allowedTransitions(),
       history: this.fsm.getHistory(),
       retryCount: this.retryCount,
+      hasPendingDiff: this.pendingDiff !== null,
     }
   }
 
@@ -234,5 +305,10 @@ export class IterationEngine {
     return this.currentSessionId !== null &&
       this.fsm.currentPhase !== IterationPhase.Done &&
       this.fsm.currentPhase !== IterationPhase.Error
+  }
+
+  /** Get the pending diff for user review, if any */
+  getPendingDiff(): DiffResult | null {
+    return this.pendingDiff
   }
 }
