@@ -1,10 +1,12 @@
 import { FSM } from "./fsm.js"
 import { IterationPhase, type FsmEvent } from "./types.js"
 import { StateManager } from "./state.js"
-import { type AiProvider, ProviderFactory, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
+import { type AiProvider, PHASE_PROMPTS, type ProviderRequest } from "./provider.js"
 import { parsePlan, formatPlanForDisplay } from "./plan-parser.js"
 import { parseCodeGenOutput, writeFiles } from "./codegen.js"
 import type { DiffResult } from "./diff.js"
+import { GateRunner } from "./quality-gates.js"
+import { Presenter } from "./presenter.js"
 
 export interface EngineConfig {
   maxRetries: number
@@ -33,6 +35,7 @@ export class IterationEngine {
   private retryCount: number = 0
   private rejectionCounts = new Map<string, { count: number; history: RejectionRecord[] }>()
   private pendingDiff: DiffResult | null = null
+  private gateRunner: GateRunner
 
   constructor(
     stateManager: StateManager,
@@ -43,6 +46,8 @@ export class IterationEngine {
     this.stateManager = stateManager
     this.provider = provider
     this.config = { maxRejections: 3, ...config }
+    this.gateRunner = new GateRunner()
+    this.gateRunner.registerDefaultGates()
   }
 
   async startIteration(sessionId: string): Promise<TransitionResult> {
@@ -201,9 +206,10 @@ export class IterationEngine {
             usage: response.usage,
           })
         }
-      } catch (error: any) {
-        await this.handleError(error)
-        return this.buildResult(IterationPhase.Error, `Provider error: ${error.message}`)
+      } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error(String(error))
+        await this.handleError(err)
+        return this.buildResult(IterationPhase.Error, `Provider error: ${err.message}`)
       }
     }
 
@@ -220,6 +226,46 @@ export class IterationEngine {
         currentPhase: IterationPhase.AwaitingApproval,
       })
       return this.buildResult(IterationPhase.AwaitingApproval, output)
+    }
+
+    // Testing phase — run quality gates
+    if (phase === IterationPhase.Testing) {
+      const testSession = this.currentSessionId
+        ? await this.stateManager.getSession(this.currentSessionId)
+        : null
+
+      const projectDir = testSession?.projectPath || "."
+      const gateResult = await this.gateRunner.runAll(projectDir)
+
+      // Store gate results in MCP memory
+      const presenter = new Presenter({ colors: false, compact: true })
+      const formattedOutput = presenter.presentGateResults(gateResult.results, gateResult.allPassed)
+
+      if (this.currentSessionId) {
+        await this.stateManager.storeIterationContext(this.currentSessionId, {
+          phase: IterationPhase.Testing,
+          gateResults: gateResult.results,
+          allPassed: gateResult.allPassed,
+          summary: gateResult.summary,
+          formattedOutput,
+        })
+      }
+
+      if (gateResult.allPassed) {
+        this.fsm.transitionTo(IterationPhase.Committing)
+        await this.stateManager.updateSession(this.currentSessionId!, {
+          currentPhase: IterationPhase.Committing,
+        })
+        return this.buildResult(IterationPhase.Committing, formattedOutput)
+      } else {
+        // Tests failed — regenerate code
+        this.retryCount++
+        this.fsm.transitionTo(IterationPhase.Generating)
+        await this.stateManager.updateSession(this.currentSessionId!, {
+          currentPhase: IterationPhase.Generating,
+        })
+        return this.buildResult(IterationPhase.Generating, formattedOutput)
+      }
     }
 
     // After successful provider response for Generating phase — parse codegen output and write files

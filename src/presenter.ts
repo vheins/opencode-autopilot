@@ -1,5 +1,6 @@
 import type { ParsedPlan } from "./plan-parser.js"
 import type { DiffResult } from "./diff.js"
+import type { GateResult } from "./quality-gates.js"
 import { IterationPhase } from "./types.js"
 
 export interface PresentationOptions {
@@ -79,6 +80,39 @@ export class Presenter {
 
     lines.push("─".repeat(60))
     lines.push("  Review changes above. Type 'approve' to commit or 'reject <reason>' to regenerate.")
+    return lines.join("\n")
+  }
+
+  /** Present gate results after testing phase */
+  presentGateResults(results: GateResult[], allPassed: boolean): string {
+    const lines: string[] = []
+    lines.push("")
+    lines.push("═".repeat(60))
+    lines.push("  AUTOPILOT — Quality Gates")
+    lines.push("═".repeat(60))
+    lines.push("")
+    for (const result of results) {
+      const icon = result.passed ? "  ✓" : "  ✗"
+      lines.push(`${icon} ${result.gateName} (${result.duration}ms)`)
+      if (result.errors.length > 0) {
+        for (const err of result.errors.slice(0, 5)) {
+          lines.push(`     Error: ${err}`)
+        }
+        if (result.errors.length > 5) {
+          lines.push(`     ... and ${result.errors.length - 5} more errors`)
+        }
+      }
+    }
+    lines.push("")
+    const passed = results.filter(r => r.passed).length
+    const failed = results.filter(r => !r.passed).length
+    lines.push(`  ${passed} passed, ${failed} failed`)
+    lines.push("─".repeat(60))
+    if (allPassed) {
+      lines.push("  ✓ All gates passed — proceeding to commit.")
+    } else {
+      lines.push("  ✗ Some gates failed — regenerating code.")
+    }
     return lines.join("\n")
   }
 

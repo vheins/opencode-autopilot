@@ -39,6 +39,16 @@ export type { SafetyRule, SafetyCheckResult, SafetyConfig, SafetyAction }
 export { SafetyChecker, defaultSafetyChecker }
 import { IterationEngine } from "./engine.js"
 import { Presenter } from "./presenter.js"
+import {
+  GateRunner,
+  TypeCheckGate,
+  LintGate,
+  TestGate,
+  type GateResult,
+  type GateConfig,
+} from "./quality-gates.js"
+export type { GateResult, GateConfig }
+export { GateRunner, TypeCheckGate, LintGate, TestGate }
 
 const DEFAULT_CONFIG: AutopilotConfig = {
   maxRetries: 3,

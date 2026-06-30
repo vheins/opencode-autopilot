@@ -28,9 +28,12 @@
     "@opencode-ai/plugin": ">=1.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@opencode-ai/plugin": "^1.17.0",
     "@types/node": "^22.0.0",
+    "eslint": "^10.6.0",
     "typescript": "^5.7.0",
+    "typescript-eslint": "^8.62.1",
     "vitest": "^3.2.6"
   },
   "keywords": [
